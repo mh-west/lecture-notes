@@ -116,7 +116,7 @@ export default function PageView({ pdf, pageNum, width1, height1, displayWidth, 
     };
   }, []);
 
-  const drawing = useRef<{ id: number; points: Point[]; moved: boolean; mode: 'draw' | 'erase' | 'tap' } | null>(null);
+  const drawing = useRef<{ id: number; points: Point[]; moved: boolean; mode: 'draw' | 'erase' | 'tap' | 'lasso' } | null>(null);
 
   const toPoint = (e: PointerEvent | React.PointerEvent): Point => {
     const r = liveCanvas.current!.getBoundingClientRect();
@@ -141,12 +141,25 @@ export default function PageView({ pdf, pageNum, width1, height1, displayWidth, 
     if (d && d.mode === 'draw' && d.points.length) {
       drawStroke(ctx, { tool: tool === 'highlighter' ? 'highlighter' : 'pen', color, size, points: d.points }, scale, last);
     }
+    if (d && d.mode === 'lasso' && d.points.length > 1) {
+      ctx.save();
+      ctx.setLineDash([6, 5]);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#7c3aed';
+      ctx.fillStyle = 'rgba(124,58,237,.08)';
+      ctx.beginPath();
+      d.points.forEach((p, i) => (i ? ctx.lineTo(p.x * scale, p.y * scale) : ctx.moveTo(p.x * scale, p.y * scale)));
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (drawing.current) return;
     const isFinger = e.pointerType === 'touch';
-    const mode = isFinger && !fingerDraw ? 'tap' : tool === 'eraser' ? 'erase' : tool === 'lasso' ? 'tap' : 'draw';
+    const mode = isFinger && !fingerDraw ? 'tap' : tool === 'eraser' ? 'erase' : tool === 'lasso' ? 'lasso' : 'draw';
     if (mode !== 'tap') {
       try {
         liveCanvas.current!.setPointerCapture(e.pointerId);
@@ -168,9 +181,9 @@ export default function PageView({ pdf, pageNum, width1, height1, displayWidth, 
       const p = toPoint(ev);
       d.moved = true;
       if (d.mode === 'erase') eraseAt(p);
-      else if (d.mode === 'draw') d.points.push(p);
+      else if (d.mode === 'draw' || d.mode === 'lasso') d.points.push(p);
     }
-    if (d.mode === 'draw') renderLive();
+    if (d.mode === 'draw' || d.mode === 'lasso') renderLive();
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
@@ -183,6 +196,27 @@ export default function PageView({ pdf, pageNum, width1, height1, displayWidth, 
         tool: tool === 'highlighter' ? 'highlighter' : 'pen',
         color, size, points: d.points,
       });
+    }
+    if (d.mode === 'lasso') {
+      const xs = d.points.map((p) => p.x);
+      const ys = d.points.map((p) => p.y);
+      const bounds = { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) };
+      if (bounds.maxX - bounds.minX > 8 && bounds.maxY - bounds.minY > 8) {
+        const st = useStore.getState();
+        let recId = st.activeRec?.id;
+        let t = st.recTime();
+        if (t == null) {
+          // Not recording: anchor to the latest timed stroke inside the selection.
+          const inside = strokes.filter((s) => {
+            const b = strokeBounds(s);
+            return s.t != null && b.minX >= bounds.minX && b.maxX <= bounds.maxX && b.minY >= bounds.minY && b.maxY <= bounds.maxY;
+          });
+          const last = inside.sort((a, b) => b.t! - a.t!)[0];
+          recId = last?.recId;
+          t = last?.t;
+        }
+        st.openAsk({ page: pageNum, bounds, recId, t });
+      }
     }
     if (d.mode === 'tap' && !d.moved) {
       // Tap on a stroke → play the lecture audio from the moment it was written.
@@ -202,7 +236,7 @@ export default function PageView({ pdf, pageNum, width1, height1, displayWidth, 
   const touchAction = fingerDraw ? 'none' : 'pan-x pan-y';
 
   return (
-    <div ref={wrapRef} className="page" style={{ width: displayWidth, height: displayHeight }}>
+    <div ref={wrapRef} className="page" data-w1={width1} style={{ width: displayWidth, height: displayHeight }}>
       <canvas ref={pdfCanvas} className="layer" style={{ width: displayWidth, height: displayHeight }} />
       <canvas ref={inkCanvas} className="layer" style={{ width: displayWidth, height: displayHeight }} />
       <canvas

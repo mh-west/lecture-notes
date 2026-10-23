@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { db } from '../db';
 import { groupStrokes } from '../ink';
-import { loadPdf, type PDFDoc } from '../pdf';
+import { currentPdf, loadPdf, type PDFDoc } from '../pdf';
 import { useStore } from '../store';
 import PageView from './PageView';
 
@@ -30,6 +30,7 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
         }
         if (cancelled) return void doc.loadingTask.destroy();
         setSizes(s);
+        currentPdf.doc = doc;
         setPdf(doc);
       } catch (e) {
         setError(String(e));

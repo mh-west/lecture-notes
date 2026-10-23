@@ -40,8 +40,8 @@ export default function Toolbar({ onBack, title }: { onBack: () => void; title: 
   const { tool, color, size, zoom, fingerDraw, showOrder, undoStack, redoStack } = useStore();
   const { setTool, setColor, setSize, setZoom, setFingerDraw, setShowOrder, undo, redo } = useStore();
 
-  const toolBtn = (t: Tool, label: string, disabled = false) => (
-    <button className={tool === t ? 'active' : ''} onClick={() => setTool(t)} disabled={disabled}>
+  const toolBtn = (t: Tool, label: string) => (
+    <button className={tool === t ? 'active' : ''} onClick={() => setTool(t)}>
       {label}
     </button>
   );
@@ -54,7 +54,7 @@ export default function Toolbar({ onBack, title }: { onBack: () => void; title: 
       {toolBtn('pen', '✏️ 펜')}
       {toolBtn('highlighter', '🖍 형광')}
       {toolBtn('eraser', '🧽 지우개')}
-      <button disabled title="3단계에서 추가: 동그라미 쳐서 AI에 질문">⭕ AI</button>
+      {toolBtn('lasso', '⭕ 질문')}
       <div className="sep" />
       {COLORS.map((c) => (
         <button

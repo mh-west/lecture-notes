@@ -42,11 +42,37 @@ export interface AudioChunk {
   data: Blob;
 }
 
+export interface Segment {
+  id: string;
+  docId: string;
+  recId: string;
+  start: number; // seconds since recording start
+  end: number;
+  text: string;
+  ko?: string;
+}
+
+export interface Question {
+  id: string;
+  docId: string;
+  page?: number;
+  bounds?: { minX: number; minY: number; maxX: number; maxY: number };
+  image?: Blob;
+  prompt: string;
+  label: string;
+  recId?: string;
+  t?: number;
+  createdAt: number;
+  answer?: string;
+}
+
 export const db = new Dexie('lecture-notes') as Dexie & {
   docs: EntityTable<Doc, 'id'>;
   strokes: EntityTable<Stroke, 'id'>;
   recordings: EntityTable<Recording, 'id'>;
   chunks: EntityTable<AudioChunk, 'id'>;
+  segments: EntityTable<Segment, 'id'>;
+  questions: EntityTable<Question, 'id'>;
 };
 
 db.version(1).stores({
@@ -54,6 +80,10 @@ db.version(1).stores({
   strokes: 'id, docId, [docId+page]',
   recordings: 'id, docId',
   chunks: '++id, recId, [recId+seq]',
+});
+db.version(2).stores({
+  segments: 'id, docId, recId',
+  questions: 'id, docId, createdAt',
 });
 
 export const uid = () => crypto.randomUUID();

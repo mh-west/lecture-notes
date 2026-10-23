@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { isNative } from '../native';
 import { fmtTime, groupStrokes } from '../ink';
 import { audio, useStore } from '../store';
 
@@ -111,15 +112,155 @@ function Timeline() {
   );
 }
 
+function Transcript() {
+  const segments = useStore((s) => s.segments);
+  const recordings = useStore((s) => s.recordings);
+  const activeRec = useStore((s) => s.activeRec);
+  const playingRecId = useStore((s) => s.playingRecId);
+  const partial = useStore((s) => s.partial);
+  const captionError = useStore((s) => s.captionError);
+  const playAt = useStore((s) => s.playAt);
+  const openAsk = useStore((s) => s.openAsk);
+  const translateSegment = useStore((s) => s.translateSegment);
+  const [chosen, setChosen] = useState<string | null>(null);
+  const [showKo, setShowKo] = useState(true);
+  const [now, setNow] = useState(-1);
+  const listRef = useRef<HTMLOListElement>(null);
+  const stick = useRef(true);
+
+  const recId = activeRec?.id ?? chosen ?? playingRecId ?? recordings.at(-1)?.id ?? null;
+  const lines = useMemo(() => segments.filter((s) => s.recId === recId), [segments, recId]);
+
+  useEffect(() => {
+    const on = () => setNow(audioRecIdMatches(recId) ? audio.currentTime : -1);
+    audio.addEventListener('timeupdate', on);
+    return () => audio.removeEventListener('timeupdate', on);
+  }, [recId]);
+
+  // Follow new captions unless the user scrolled up to read something.
+  useEffect(() => {
+    const el = listRef.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [lines.length, partial]);
+
+  return (
+    <div className="transcript">
+      <div className="transcript-bar">
+        <select value={recId ?? ''} onChange={(e) => setChosen(e.target.value || null)} disabled={Boolean(activeRec)}>
+          {!recordings.length && <option value="">녹음 없음</option>}
+          {recordings.map((r, i) => (
+            <option key={r.id} value={r.id}>
+              녹음 {i + 1} · {new Date(r.startedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              {r.id === activeRec?.id ? ' (녹음 중)' : ''}
+            </option>
+          ))}
+        </select>
+        <label className="check">
+          <input type="checkbox" checked={showKo} onChange={(e) => setShowKo(e.target.checked)} /> 번역
+        </label>
+      </div>
+      {captionError && <div className="warn">{captionError}</div>}
+      {!lines.length && !partial && (
+        <div className="hint">
+          {activeRec ? '듣고 있어요… 교수님이 말하면 여기에 자막이 나와요.' : '녹음을 시작하면 영어 자막과 한국어 번역이 실시간으로 표시돼요.'}
+          {!isNative && ' (브라우저에서는 번역 없이 자막만 지원)'}
+        </div>
+      )}
+      <ol
+        className="lines"
+        ref={listRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        }}
+      >
+        {lines.map((l) => (
+          <li key={l.id} className={now >= l.start && now < l.end + 0.5 ? 'current' : ''}>
+            <button className="ts" onClick={() => playAt(l.recId, l.start)} disabled={l.recId === activeRec?.id}>
+              {fmtTime(l.start)}
+            </button>
+            <div className="line-body">
+              <div className="en">{l.text}</div>
+              {showKo && (l.ko ? <div className="ko">{l.ko}</div> : isNative && <button className="link small" onClick={() => translateSegment(l.id)}>번역</button>)}
+            </div>
+            <button className="ask-btn" title="이 문장 AI에게 묻기" onClick={() => openAsk({ segment: l })}>?</button>
+          </li>
+        ))}
+        {partial && (
+          <li className="partial">
+            <span className="ts">…</span>
+            <div className="line-body"><div className="en">{partial}</div></div>
+          </li>
+        )}
+      </ol>
+    </div>
+  );
+}
+
+function audioRecIdMatches(recId: string | null) {
+  return Boolean(recId) && useStore.getState().playingRecId === recId;
+}
+
+function BlobImage({ blob, onClick }: { blob: Blob; onClick: () => void }) {
+  const [url, setUrl] = useState<string>();
+  useEffect(() => {
+    const u = URL.createObjectURL(blob);
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [blob]);
+  return url ? <img src={url} alt="" onClick={onClick} /> : null;
+}
+
+function Questions() {
+  const questions = useStore((s) => s.questions);
+  const update = useStore((s) => s.updateQuestion);
+  const remove = useStore((s) => s.deleteQuestion);
+  const focus = useStore((s) => s.focusStrokes);
+  const openAsk = useStore((s) => s.openAsk);
+
+  if (!questions.length) {
+    return <div className="hint">툴바의 ⭕ 질문 도구로 PDF에서 모르는 부분을 동그라미 치거나, 자막 옆 ? 버튼을 누르면 Claude / ChatGPT로 바로 물어볼 수 있어요.</div>;
+  }
+  return (
+    <ol className="questions">
+      {[...questions].reverse().map((q) => (
+        <li key={q.id}>
+          {q.image && <BlobImage blob={q.image} onClick={() => q.page && q.bounds && focus(q.page, q.bounds.minY, [])} />}
+          <div className="q-meta">
+            <b>{q.label}</b>
+            <span className="muted">
+              {q.page ? `p.${q.page}` : '자막'}
+              {q.t != null ? ` · ${fmtTime(q.t)}` : ''} · {new Date(q.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          </div>
+          <textarea
+            placeholder="받은 답을 여기에 붙여넣어 두면 복습할 때 같이 볼 수 있어요"
+            defaultValue={q.answer}
+            rows={q.answer ? 5 : 2}
+            onBlur={(e) => e.target.value !== (q.answer ?? '') && update(q.id, { answer: e.target.value })}
+          />
+          <div className="row-wrap">
+            {q.page && q.bounds && <button onClick={() => openAsk({ page: q.page, bounds: q.bounds, recId: q.recId, t: q.t })}>다시 묻기</button>}
+            <button className="danger" onClick={() => confirm('이 질문을 삭제할까요?') && remove(q.id)}>삭제</button>
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 export default function SidePanel() {
-  const [tab, setTab] = useState<'order' | 'transcript' | 'ai'>('order');
+  const tab = useStore((s) => s.sidePanelTab);
+  const setTab = useStore((s) => s.setSidePanelTab);
+  const qCount = useStore((s) => s.questions.length);
   return (
     <aside className="side">
       <div className="tabs">
-        <button className={tab === 'order' ? 'active' : ''} onClick={() => setTab('order')}>필기 순서</button>
         <button className={tab === 'transcript' ? 'active' : ''} onClick={() => setTab('transcript')}>자막·번역</button>
-        <button className={tab === 'ai' ? 'active' : ''} onClick={() => setTab('ai')}>AI 질문</button>
+        <button className={tab === 'order' ? 'active' : ''} onClick={() => setTab('order')}>필기 순서</button>
+        <button className={tab === 'ai' ? 'active' : ''} onClick={() => setTab('ai')}>AI 질문{qCount ? ` ${qCount}` : ''}</button>
       </div>
+      {tab === 'transcript' && <Transcript />}
       {tab === 'order' && (
         <>
           <Player />
@@ -127,8 +268,7 @@ export default function SidePanel() {
           <Timeline />
         </>
       )}
-      {tab === 'transcript' && <div className="hint">2단계에서 실시간 영어 자막 + 한국어 번역이 여기에 표시됩니다.</div>}
-      {tab === 'ai' && <div className="hint">3단계에서 ⭕ 도구로 동그라미 친 부분의 AI 답변이 여기에 카드로 쌓입니다.</div>}
+      {tab === 'ai' && <Questions />}
     </aside>
   );
 }

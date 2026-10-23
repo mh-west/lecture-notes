@@ -1,5 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useState } from 'react';
+import AskDialog from './components/AskDialog';
 import Library from './components/Library';
 import PdfViewer from './components/PdfViewer';
 import SidePanel from './components/SidePanel';
@@ -37,6 +38,7 @@ export default function App() {
         <PdfViewer key={docId} docId={docId} onMissing={() => setDocId(null)} />
         <SidePanel />
       </div>
+      <AskDialog />
     </div>
   );
 }

@@ -1,0 +1,41 @@
+# iPad에 설치하기 (Mac 필요, 무료)
+
+## 준비물 (처음 한 번)
+1. **Xcode** — Mac App Store에서 설치 (무료, 용량 큼). 설치 후 한 번 실행해서 추가 구성요소 설치.
+2. **Node.js** — https://nodejs.org 에서 LTS 버전 설치.
+3. **iPad 설정**
+   - 설정 > 개인정보 보호 및 보안 > **개발자 모드** 켜기 (iPad를 Mac에 한 번 연결해야 메뉴가 보일 수 있음, 켜면 재시동)
+   - 설정 > 앱 > 번역(또는 설정 > 일반 > 언어 및 지역 > 번역 언어)에서 **영어, 한국어 다운로드** (기기 내 번역용)
+
+## 빌드 & 설치
+```bash
+git clone https://github.com/mh-west/lecture-notes.git
+cd lecture-notes
+npm install
+npm run ios        # 웹 빌드 → iOS 프로젝트 동기화 → Xcode 열기
+```
+Xcode가 열리면:
+1. 왼쪽에서 **App** 프로젝트 클릭 → TARGETS **App** → **Signing & Capabilities** 탭
+2. **Team**: "Add an Account…"로 본인 Apple ID 로그인 → "(Personal Team)" 선택
+3. **Bundle Identifier**가 겹친다고 나오면 끝에 아무 글자나 추가 (예: `kr.ac.snu.lecturenotes.mh`)
+4. iPad를 USB로 연결 → 상단 기기 선택에서 iPad 선택 → ▶ (Run)
+5. 처음엔 iPad에서 "신뢰할 수 없는 개발자"가 뜸 → 설정 > 일반 > **VPN 및 기기 관리** → 본인 Apple ID → 신뢰
+
+> 무료 Apple ID로 설치한 앱은 **7일 후 만료**돼요. 만료되면 iPad를 연결하고 Xcode에서 ▶만 다시 누르면 돼요 (데이터는 유지).
+> 연 $99 Apple Developer Program에 가입하면 1년간 유지돼요.
+
+## 코드 업데이트 후 다시 설치
+```bash
+git pull
+npm install
+npm run ios        # Xcode에서 ▶
+```
+
+## 빌드 에러가 나면
+Xcode 왼쪽 빨간 ❗ 에러 메시지를 복사해서 Claude에게 붙여넣어 주세요. Swift 부분(음성인식·번역)은 클라우드에서 직접 빌드해보지 못해서 첫 빌드 때 수정이 필요할 수 있어요.
+
+## 사용 팁
+- **자막·번역**: iPadOS 26 이상이면 Apple의 새 기기 내 음성인식(SpeechAnalyzer)을 써요. 처음 녹음할 때 영어 음성 모델을 내려받느라 자막이 조금 늦게 시작될 수 있어요. 그보다 낮은 버전은 이전 Apple 음성인식(기기 내)으로 동작하고, 번역은 iPadOS 26 이상에서만 돼요.
+- **AI 질문**: ⭕ 질문 도구로 동그라미 → "공유"에서 Claude 또는 ChatGPT 앱 선택. 질문 내용은 클립보드에도 복사돼 있으니 텍스트가 빠지면 붙여넣기 하세요.
+- Claude 앱을 **Slide Over**(화면 오른쪽 가장자리에서 끌어오기)로 띄워두면 노트를 보면서 답을 볼 수 있어요.
+- 모든 데이터(PDF, 필기, 녹음, 자막)는 iPad 안에만 저장돼요. 앱을 삭제하면 데이터도 지워져요.
