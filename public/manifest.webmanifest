@@ -1,0 +1,9 @@
+{
+  "name": "강의 노트",
+  "short_name": "강의노트",
+  "display": "standalone",
+  "orientation": "any",
+  "start_url": "/",
+  "background_color": "#eef0f3",
+  "theme_color": "#ffffff"
+}
