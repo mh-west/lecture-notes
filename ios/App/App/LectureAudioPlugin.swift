@@ -56,7 +56,7 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         Task {
             do {
                 let session = AVAudioSession.sharedInstance()
-                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
                 try session.setActive(true)
 
                 let input = engine.inputNode
@@ -353,14 +353,18 @@ final class LegacyTranscriber: LiveTranscriber {
         req?.append(buffer)
     }
 
+    private func takeRequest() -> SFSpeechAudioBufferRecognitionRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        let req = request
+        request = nil
+        return req
+    }
+
     func stop() async {
         stopping = true
         await MainActor.run { rotateTimer?.invalidate() }
-        lock.lock()
-        let req = request
-        request = nil
-        lock.unlock()
-        req?.endAudio()
+        takeRequest()?.endAudio()
         try? await Task.sleep(nanoseconds: 1_500_000_000) // let the last final result arrive
     }
 }
