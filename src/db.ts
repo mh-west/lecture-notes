@@ -4,6 +4,7 @@ export interface Doc {
   id: string;
   name: string;
   pdf: Blob;
+  pages?: number[]; // display order: PDF page numbers, negative ids for added blank pages
   createdAt: number;
   updatedAt: number;
 }
@@ -25,6 +26,13 @@ export interface Stroke {
   createdAt: number; // wall clock ms
   recId?: string; // recording active while drawn
   t?: number; // seconds since recording start
+  pk?: PencilKitInk; // written with Apple Pencil on the iPad: drawn from PencilKit's own rendering
+}
+
+export interface PencilKitInk {
+  data: string; // base64 PKDrawing holding just this stroke
+  bounds: { x: number; y: number; w: number; h: number }; // rendered area, PDF units
+  scale: number; // CSS px per PDF unit when it was written (the PKDrawing's coordinate scale)
 }
 
 export interface Recording {
@@ -33,6 +41,8 @@ export interface Recording {
   startedAt: number;
   endedAt?: number;
   mimeType: string;
+  name?: string; // imported file name
+  pageLog?: { t: number; page: number }[]; // page on screen from time t (seconds) onwards
 }
 
 export interface AudioChunk {
@@ -49,7 +59,15 @@ export interface Segment {
   start: number; // seconds since recording start
   end: number;
   text: string;
-  ko?: string;
+  ko?: string; // quick line-by-line machine translation
+  ko2?: string; // language-model translation using slide context; '' = filler only
+}
+
+export interface Summary {
+  recId: string;
+  docId: string;
+  text: string; // Markdown
+  createdAt: number;
 }
 
 export interface Question {
@@ -73,6 +91,7 @@ export const db = new Dexie('lecture-notes') as Dexie & {
   chunks: EntityTable<AudioChunk, 'id'>;
   segments: EntityTable<Segment, 'id'>;
   questions: EntityTable<Question, 'id'>;
+  summaries: EntityTable<Summary, 'recId'>;
 };
 
 db.version(1).stores({
@@ -84,6 +103,9 @@ db.version(1).stores({
 db.version(2).stores({
   segments: 'id, docId, recId',
   questions: 'id, docId, createdAt',
+});
+db.version(3).stores({
+  summaries: 'recId, docId',
 });
 
 export const uid = () => crypto.randomUUID();

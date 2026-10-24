@@ -4,6 +4,7 @@ import AskDialog from './components/AskDialog';
 import Library from './components/Library';
 import PdfViewer from './components/PdfViewer';
 import SidePanel from './components/SidePanel';
+import ExpiryBanner from './components/ExpiryBanner';
 import Toolbar from './components/Toolbar';
 import { db } from './db';
 import { useStore } from './store';
@@ -34,6 +35,7 @@ export default function App() {
   return (
     <div className="app">
       <Toolbar title={doc?.name ?? ''} onBack={() => setDocId(null)} />
+      <ExpiryBanner quiet />
       <div className="main">
         <PdfViewer key={docId} docId={docId} onMissing={() => setDocId(null)} />
         <SidePanel />

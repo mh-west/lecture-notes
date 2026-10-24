@@ -16,24 +16,37 @@ function outlinePath(points: number[][]): Path2D {
   return path;
 }
 
-export function drawStroke(ctx: CanvasRenderingContext2D, s: Drawable, scale: number, last = true) {
+// Saved strokes never change, so their outline is computed once per zoom level.
+const pathCache = new WeakMap<object, { scale: number; path: Path2D }>();
+
+function strokePath(s: Drawable, scale: number, last: boolean): Path2D {
+  const hit = pathCache.get(s);
+  if (hit && hit.scale === scale) return hit.path;
   const pts = s.points.map((p) => [p.x * scale, p.y * scale, p.p]);
   const hl = s.tool === 'highlighter';
-  const outline = getStroke(pts, {
-    size: s.size * scale * (hl ? 4 : 1),
-    thinning: hl ? 0 : 0.55,
-    smoothing: 0.5,
-    streamline: 0.4,
-    simulatePressure: !s.points.some((p) => p.p !== 0.5),
-    last,
-  });
+  const path = outlinePath(
+    getStroke(pts, {
+      size: s.size * scale * (hl ? 4 : 1),
+      thinning: hl ? 0 : 0.55,
+      smoothing: 0.5,
+      streamline: 0.4,
+      simulatePressure: !s.points.some((p) => p.p !== 0.5),
+      last,
+    }),
+  );
+  if (last) pathCache.set(s, { scale, path });
+  return path;
+}
+
+export function drawStroke(ctx: CanvasRenderingContext2D, s: Drawable, scale: number, last = true) {
+  const hl = s.tool === 'highlighter';
   ctx.save();
   ctx.fillStyle = s.color;
   if (hl) {
     ctx.globalAlpha = 0.3;
     ctx.globalCompositeOperation = 'multiply';
   }
-  ctx.fill(outlinePath(outline));
+  ctx.fill(strokePath(s, scale, last));
   ctx.restore();
 }
 

@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { loadSettings } from '../llm';
+import Markdown from './Markdown';
 import { isNative } from '../native';
 import { fmtTime, groupStrokes } from '../ink';
 import { audio, useStore } from '../store';
@@ -84,6 +86,7 @@ function Timeline() {
   const recordings = useStore((s) => s.recordings);
   const playAt = useStore((s) => s.playAt);
   const focusStrokes = useStore((s) => s.focusStrokes);
+  const pageOrder = useStore((s) => s.pageOrder);
   const groups = useMemo(() => groupStrokes(strokes), [strokes]);
   const recIndex = new Map(recordings.map((r, i) => [r.id, i + 1]));
 
@@ -99,7 +102,7 @@ function Timeline() {
           }}
         >
           <span className="num">{g.index}</span>
-          <span>p.{g.page}</span>
+          <span>p.{pageOrder.indexOf(g.page) + 1 || g.page}</span>
           <span className="muted">
             {g.recId && g.t != null
               ? `녹음${recIndex.get(g.recId) ?? ''} ${fmtTime(g.t)}`
@@ -122,6 +125,12 @@ function Transcript() {
   const playAt = useStore((s) => s.playAt);
   const openAsk = useStore((s) => s.openAsk);
   const translateSegment = useStore((s) => s.translateSegment);
+  const importRecording = useStore((s) => s.importRecording);
+  const importing = useStore((s) => s.importing);
+  const translateAll = useStore((s) => s.translateAll);
+  const translatingAll = useStore((s) => s.translatingAll);
+  const refineAll = useStore((s) => s.refineAll);
+  const refining = useStore((s) => s.refining);
   const [chosen, setChosen] = useState<string | null>(null);
   const [showKo, setShowKo] = useState(true);
   const [now, setNow] = useState(-1);
@@ -150,7 +159,7 @@ function Transcript() {
           {!recordings.length && <option value="">녹음 없음</option>}
           {recordings.map((r, i) => (
             <option key={r.id} value={r.id}>
-              녹음 {i + 1} · {new Date(r.startedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              녹음 {i + 1}{r.name ? ` (${r.name})` : ''} · {new Date(r.startedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
               {r.id === activeRec?.id ? ' (녹음 중)' : ''}
             </option>
           ))}
@@ -158,7 +167,37 @@ function Transcript() {
         <label className="check">
           <input type="checkbox" checked={showKo} onChange={(e) => setShowKo(e.target.checked)} /> 번역
         </label>
+        {isNative && (
+          <button
+            title="다른 앱에서 내보낸 녹음 파일 가져오기"
+            disabled={Boolean(activeRec || importing)}
+            onClick={() => importRecording().catch((e) => alert(e instanceof Error ? e.message : String(e)))}
+          >
+            📂
+          </button>
+        )}
       </div>
+      {showKo && recId && !activeRec && !importing && lines.some((l) => l.ko2 === undefined) && (
+        <div className="hint">
+          {refining
+            ? `AI가 번역을 다듬는 중… ${refining.done} / ${refining.total}줄`
+            : <>AI로 다듬지 않은 줄 {lines.filter((l) => l.ko2 === undefined).length}개{' '}
+                <button className="link small" onClick={() => refineAll(recId)}>AI로 다듬기</button></>}
+        </div>
+      )}
+      {isNative && showKo && recId && !activeRec && !importing && !loadSettings().refine && lines.some((l) => !l.ko) && (
+        <div className="hint">
+          번역 안 된 줄 {lines.filter((l) => !l.ko).length}개{' '}
+          <button className="link small" disabled={translatingAll} onClick={() => translateAll(recId)}>
+            {translatingAll ? '번역 중…' : '모두 번역'}
+          </button>
+        </div>
+      )}
+      {importing && (
+        <div className="hint">
+          녹음 파일 자막 만드는 중… {fmtTime(importing.seconds)} / {fmtTime(importing.duration)}
+        </div>
+      )}
       {captionError && <div className="warn">{captionError}</div>}
       {!lines.length && !partial && (
         <div className="hint">
@@ -175,13 +214,18 @@ function Transcript() {
         }}
       >
         {lines.map((l) => (
-          <li key={l.id} className={now >= l.start && now < l.end + 0.5 ? 'current' : ''}>
+          <li key={l.id} className={`${now >= l.start && now < l.end + 0.5 ? 'current' : ''} ${l.ko2 === '' ? 'filler' : ''}`}>
             <button className="ts" onClick={() => playAt(l.recId, l.start)} disabled={l.recId === activeRec?.id}>
               {fmtTime(l.start)}
             </button>
             <div className="line-body">
               <div className="en">{l.text}</div>
-              {showKo && (l.ko ? <div className="ko">{l.ko}</div> : isNative && <button className="link small" onClick={() => translateSegment(l.id)}>번역</button>)}
+              {showKo &&
+                (l.ko2 !== undefined
+                  ? l.ko2 && <div className="ko ai">{l.ko2}</div>
+                  : l.ko
+                    ? <div className="ko">{l.ko}</div>
+                    : isNative && <button className="link small" onClick={() => translateSegment(l.id)}>번역</button>)}
             </div>
             <button className="ask-btn" title="이 문장 AI에게 묻기" onClick={() => openAsk({ segment: l })}>?</button>
           </li>
@@ -193,6 +237,76 @@ function Transcript() {
           </li>
         )}
       </ol>
+    </div>
+  );
+}
+
+function LectureSummary() {
+  const recordings = useStore((s) => s.recordings);
+  const summaries = useStore((s) => s.summaries);
+  const summarizing = useStore((s) => s.summarizing);
+  const activeRec = useStore((s) => s.activeRec);
+  const summarizeRec = useStore((s) => s.summarizeRec);
+  const summarizeRange = useStore((s) => s.summarizeRange);
+  const captionError = useStore((s) => s.captionError);
+  const hasLines = useStore((s) => s.segments);
+  const pageCount = useStore((s) => s.pageOrder.length);
+  const pagePos = useStore((s) => s.pageOrder.indexOf(s.viewPage) + 1);
+  const finished = recordings.filter((r) => r.id !== activeRec?.id);
+  const ranges = summaries.filter((x) => x.recId.startsWith('range:')).sort((a, b) => a.createdAt - b.createdAt);
+  const [chosen, setChosen] = useState<string | null>(null);
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const recId = chosen ?? finished.at(-1)?.id ?? ranges.at(-1)?.recId ?? null;
+  const sum = summaries.find((x) => x.recId === recId);
+  const isRange = recId?.startsWith('range:');
+  const canRun = recId && !isRange && hasLines.some((s) => s.recId === recId) && !summarizing;
+
+  const lo = Math.max(1, Math.min(pageCount, Number(from) || pagePos || 1));
+  const hi = Math.max(lo, Math.min(pageCount, Number(to) || lo));
+  const runRange = async () => {
+    const id = await summarizeRange(lo, hi);
+    if (id) setChosen(id);
+  };
+
+  return (
+    <div className="transcript">
+      <div className="transcript-bar">
+        <select value={recId ?? ''} onChange={(e) => setChosen(e.target.value || null)}>
+          {!finished.length && !ranges.length && <option value="">요약 없음</option>}
+          {finished.map((r, i) => (
+            <option key={r.id} value={r.id}>
+              녹음 {i + 1}{r.name ? ` (${r.name})` : ''} · {new Date(r.startedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+            </option>
+          ))}
+          {ranges.map((x) => (
+            <option key={x.recId} value={x.recId}>페이지 {x.recId.split(':')[2].replace('-', '~')}쪽</option>
+          ))}
+        </select>
+        {!isRange && <button disabled={!canRun} onClick={() => recId && summarizeRec(recId)}>{sum ? '다시 만들기' : '요약 만들기'}</button>}
+      </div>
+      <div className="range-bar">
+        <span>페이지</span>
+        <input type="number" inputMode="numeric" min={1} max={pageCount} placeholder={String(pagePos || 1)} value={from} onChange={(e) => setFrom(e.target.value)} />
+        <span>~</span>
+        <input type="number" inputMode="numeric" min={1} max={pageCount} placeholder={String(lo)} value={to} onChange={(e) => setTo(e.target.value)} />
+        <button disabled={Boolean(summarizing) || !pageCount} onClick={runRange}>범위 요약</button>
+      </div>
+      <div className="hint small">그 페이지들의 내용과, 녹음 중 그 페이지를 보고 있을 때 나온 강의 내용을 함께 요약해요.</div>
+      {summarizing?.recId === recId && <div className="hint">{summarizing.msg}</div>}
+      {captionError && !summarizing && <div className="warn">{captionError}</div>}
+      {sum ? (
+        <div className="summary">
+          <Markdown text={sum.text} />
+          <div className="muted">{new Date(sum.createdAt).toLocaleString('ko-KR')}에 만듦</div>
+        </div>
+      ) : (
+        !summarizing && (
+          <div className="hint">
+            {finished.length ? '아직 요약이 없어요. 요약 만들기를 누르세요.' : '녹음을 마치면 강의 요약이 여기에 만들어져요. 페이지 범위를 정해서 요약할 수도 있어요.'}
+          </div>
+        )
+      )}
     </div>
   );
 }
@@ -257,10 +371,12 @@ export default function SidePanel() {
     <aside className="side">
       <div className="tabs">
         <button className={tab === 'transcript' ? 'active' : ''} onClick={() => setTab('transcript')}>자막·번역</button>
+        <button className={tab === 'summary' ? 'active' : ''} onClick={() => setTab('summary')}>요약</button>
         <button className={tab === 'order' ? 'active' : ''} onClick={() => setTab('order')}>필기 순서</button>
         <button className={tab === 'ai' ? 'active' : ''} onClick={() => setTab('ai')}>AI 질문{qCount ? ` ${qCount}` : ''}</button>
       </div>
       {tab === 'transcript' && <Transcript />}
+      {tab === 'summary' && <LectureSummary />}
       {tab === 'order' && (
         <>
           <Player />

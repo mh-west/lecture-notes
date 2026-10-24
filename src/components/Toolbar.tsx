@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fmtTime } from '../ink';
 import { useStore, type Tool } from '../store';
+import AiSettings from './AiSettings';
 
 const COLORS = ['#1f2937', '#2563eb', '#dc2626', '#16a34a', '#9333ea', '#f59e0b'];
 const SIZES = [1.4, 2.2, 3.5];
@@ -11,6 +12,17 @@ function RecButton() {
   const stop = useStore((s) => s.stopRecording);
   const [, tick] = useState(0);
   const [err, setErr] = useState<string | null>(null);
+
+  const onStart = () =>
+    start().then(
+      () => setErr(null),
+      (e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error('startRecording failed:', msg);
+        setErr(msg);
+        alert(`녹음을 시작하지 못했어요\n\n${msg}`);
+      },
+    );
 
   useEffect(() => {
     if (!activeRec) return;
@@ -26,19 +38,17 @@ function RecButton() {
     );
   }
   return (
-    <button
-      className="rec"
-      title={err ?? '녹음 시작'}
-      onClick={() => start().then(() => setErr(null), (e) => setErr(String(e)))}
-    >
-      <span className="dot" /> 녹음{err ? ' (마이크 권한 확인)' : ''}
+    <button className="rec" title={err ?? '녹음 시작'} onClick={onStart}>
+      <span className="dot" /> 녹음{err ? ' (오류)' : ''}
     </button>
   );
 }
 
 export default function Toolbar({ onBack, title }: { onBack: () => void; title: string }) {
-  const { tool, color, size, zoom, fingerDraw, showOrder, undoStack, redoStack } = useStore();
-  const { setTool, setColor, setSize, setZoom, setFingerDraw, setShowOrder, undo, redo } = useStore();
+  const { tool, color, size, zoom, fingerDraw, showOrder, overview, undoStack, redoStack } = useStore();
+  const { setTool, setColor, setSize, setZoom, setFingerDraw, setShowOrder, setOverview, undo, redo } = useStore();
+  const [showSettings, setShowSettings] = useState(false);
+  const addBlankPage = useStore((s) => s.addBlankPage);
 
   const toolBtn = (t: Tool, label: string) => (
     <button className={tool === t ? 'active' : ''} onClick={() => setTool(t)}>
@@ -49,6 +59,10 @@ export default function Toolbar({ onBack, title }: { onBack: () => void; title: 
   return (
     <div className="toolbar">
       <button onClick={onBack} title="문서 목록">‹</button>
+      <button className={overview ? 'active' : ''} onClick={() => setOverview(!overview)} title="전체 페이지 보기">
+        ▦
+      </button>
+      <button onClick={addBlankPage} title="지금 페이지 뒤에 빈 페이지 추가">＋ 빈 페이지</button>
       <span className="title">{title}</span>
       <div className="sep" />
       {toolBtn('pen', '✏️ 펜')}
@@ -77,13 +91,15 @@ export default function Toolbar({ onBack, title }: { onBack: () => void; title: 
       <span className="zoom">{Math.round(zoom * 100)}%</span>
       <button onClick={() => setZoom(Math.min(3, +(zoom + 0.2).toFixed(1)))}>+</button>
       <button className={fingerDraw ? 'active' : ''} onClick={() => setFingerDraw(!fingerDraw)} title="손가락으로도 필기">
-        ☝️
+        ☝️ 손필기
       </button>
       <button className={showOrder ? 'active' : ''} onClick={() => setShowOrder(!showOrder)} title="필기 순서 번호 표시">
-        ①②
+        ①② 순서
       </button>
       <div className="grow" />
+      <button onClick={() => setShowSettings(true)} title="AI 번역·요약 설정">✨ AI</button>
       <RecButton />
+      {showSettings && <AiSettings onClose={() => setShowSettings(false)} />}
     </div>
   );
 }

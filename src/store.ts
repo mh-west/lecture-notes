@@ -1,5 +1,8 @@
 import { create } from 'zustand';
-import { db, recordingBlob, uid, type Question, type Recording, type Segment, type Stroke } from './db';
+import { db, recordingBlob, uid, type Question, type Recording, type Segment, type Stroke, type Summary } from './db';
+import { fmtTime } from './ink';
+import { engineProblem, loadSettings, summarize, translateLines, type PageContext } from './llm';
+import { currentPdf, pageText } from './pdf';
 import { isNative, LectureAudio, nativeFileBlob, type TranscriptEvent } from './native';
 import { startWebSpeech, webSpeechAvailable } from './transcribe-web';
 import { VOCABULARY } from './vocab';
@@ -25,12 +28,14 @@ interface State {
   recordings: Recording[];
   segments: Segment[];
   questions: Question[];
+  summaries: Summary[];
   tool: Tool;
   color: string;
   size: number;
   zoom: number;
   fingerDraw: boolean;
   showOrder: boolean;
+  overview: boolean;
   undoStack: Op[];
   redoStack: Op[];
 
@@ -39,35 +44,55 @@ interface State {
   recStartPerf: number;
   partial: string; // caption text not yet finalised
   captionError: string | null;
-  sidePanelTab: 'order' | 'transcript' | 'ai';
+  sidePanelTab: 'order' | 'transcript' | 'summary' | 'ai';
 
   // playback / review
   playingRecId: string | null;
   replayT: number | null; // when set, only strokes of playingRecId with t <= replayT are shown
   flash: { ids: string[]; nonce: number } | null;
-  scrollTo: { page: number; y: number; nonce: number } | null;
+  scrollTo: { page: number; y: number; nonce: number; jump?: boolean } | null;
+  importing: { seconds: number; duration: number } | null; // an imported recording being transcribed
+  viewPage: number; // page key in the middle of the viewer
+  pageOrder: number[]; // page keys in display order (see Doc.pages)
+  refining: { done: number; total: number } | null; // refineAll progress
+  refineError: string | null; // set when live refinement stopped (no key, model unavailable…)
+  summarizing: { recId: string; msg: string } | null;
 
   ask: AskTarget | null;
 
   openDoc: (id: string | null) => Promise<void>;
   setTool: (t: Tool) => void;
+  toggleEraser: () => void;
   setColor: (c: string) => void;
   setSize: (s: number) => void;
   setZoom: (z: number) => void;
   setFingerDraw: (v: boolean) => void;
   setShowOrder: (v: boolean) => void;
+  setOverview: (v: boolean) => void;
+  goToPage: (page: number) => void;
   setSidePanelTab: (t: State['sidePanelTab']) => void;
-  addStroke: (s: Omit<Stroke, 'id' | 'docId' | 'createdAt' | 'recId' | 't'>) => void;
+  /** `at`: when the stroke was started (wall clock ms), if earlier than now; `id`: preassigned id. */
+  addStroke: (s: Omit<Stroke, 'id' | 'docId' | 'createdAt' | 'recId' | 't'>, opts?: { at?: number; id?: string }) => Stroke | undefined;
   deleteStrokes: (ids: string[]) => void;
   undo: () => void;
   redo: () => void;
   recTime: () => number | undefined;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
+  importRecording: () => Promise<void>;
+  setViewPage: (page: number) => void;
+  setPageOrder: (order: number[]) => void;
+  addBlankPage: () => Promise<void>;
+  deleteBlankPage: (key: number) => Promise<void>;
+  refineAll: (recId: string) => Promise<void>;
+  summarizeRec: (recId: string) => Promise<void>;
+  summarizeRange: (from: number, to: number) => Promise<string | undefined>;
   playAt: (recId: string, t: number) => Promise<void>;
   setReplayT: (t: number | null) => void;
   focusStrokes: (page: number, y: number, ids: string[]) => void;
   translateSegment: (id: string) => Promise<void>;
+  translateAll: (recId: string) => Promise<void>;
+  translatingAll: boolean;
   openAsk: (target: AskTarget | null) => void;
   saveQuestion: (q: Omit<Question, 'id' | 'docId' | 'createdAt'>) => Promise<void>;
   updateQuestion: (id: string, patch: Partial<Question>) => void;
@@ -83,6 +108,15 @@ let stream: MediaStream | null = null;
 let wakeLock: WakeLockSentinel | null = null;
 let stopCaptions: (() => void) | null = null;
 let seq = 0;
+let refineChain: Promise<void> = Promise.resolve();
+let toolBeforeEraser: Tool = 'pen';
+const inFlight = new Set<string>(); // segment ids being refined
+
+const errMsg = (e: unknown) => {
+  // Keep the stack in the device log; WebKit's "undefined is not a function" says nothing on its own.
+  console.error('[lecture-notes]', e instanceof Error ? `${e.name}: ${e.message}\n${e.stack}` : e);
+  return e instanceof Error ? e.message : String(e);
+};
 
 function pickMime() {
   for (const m of ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm']) {
@@ -98,6 +132,61 @@ async function applyOp(op: Op, invert: boolean) {
 }
 
 export const useStore = create<State>((set, get) => {
+  // ---- refined translation (language model + slide context) ----
+
+  /** Page on screen at time t of a recording; recordings without a page log use the page open now. */
+  const pageAt = (recId: string, t: number) => {
+    const rec = get().activeRec?.id === recId ? get().activeRec : get().recordings.find((r) => r.id === recId);
+    let page = get().viewPage;
+    for (const e of rec?.pageLog ?? []) if (e.t <= t) page = e.page;
+    return page;
+  };
+
+  const pageContext = async (page: number): Promise<PageContext | null> => {
+    if (!currentPdf.doc) return null;
+    const order = get().pageOrder;
+    const i = order.indexOf(page);
+    const [current, prev, next] = await Promise.all([
+      pageText(page),
+      i > 0 ? pageText(order[i - 1]) : Promise.resolve(undefined),
+      i >= 0 && i < order.length - 1 ? pageText(order[i + 1]) : Promise.resolve(undefined),
+    ]);
+    return { page, current, prev, next };
+  };
+
+  const unrefined = (recId: string) =>
+    get().segments.filter((s) => s.recId === recId && s.ko2 === undefined && !inFlight.has(s.id)).sort((a, b) => a.start - b.start);
+
+  const refineBatch = async (recId: string, batch: Segment[]) => {
+    const before = get().segments
+      .filter((s) => s.recId === recId && s.end <= batch[0].start)
+      .sort((a, b) => a.start - b.start)
+      .slice(-4)
+      .map((s) => s.text);
+    const ctx = await pageContext(pageAt(recId, (batch[0].start + batch[batch.length - 1].end) / 2));
+    const out = await translateLines(batch.map((s) => s.text), ctx, before);
+    const ko2 = new Map(batch.map((s, i) => [s.id, out[i] ?? '']));
+    set((st) => ({ segments: st.segments.map((s) => (ko2.has(s.id) ? { ...s, ko2: ko2.get(s.id) } : s)) }));
+    await Promise.all(batch.map((s) => db.segments.update(s.id, { ko2: ko2.get(s.id) })));
+  };
+
+  // While recording: refine every few lines (or ~20s of speech), one request at a time.
+  const maybeRefine = (recId: string, flush = false) => {
+    if (!loadSettings().refine || get().refineError) return;
+    const pending = unrefined(recId);
+    if (!pending.length) return;
+    if (!flush && pending.length < 4 && pending[pending.length - 1].end - pending[0].start < 20) return;
+    const batch = pending.slice(0, 8);
+    batch.forEach((s) => inFlight.add(s.id));
+    refineChain = refineChain
+      .then(() => refineBatch(recId, batch))
+      .catch((e) => set({ refineError: errMsg(e), captionError: `다듬은 번역을 멈췄어요: ${errMsg(e)}` }))
+      .finally(() => {
+        batch.forEach((s) => inFlight.delete(s.id));
+        maybeRefine(recId, flush);
+      });
+  };
+
   const onCaption = (rec: Recording) => (e: TranscriptEvent) => {
     if (get().activeRec?.id !== rec.id) return;
     if (!e.final) {
@@ -108,6 +197,7 @@ export const useStore = create<State>((set, get) => {
     set((st) => ({ segments: [...st.segments, seg], partial: '' }));
     db.segments.put(seg);
     if (isNative) get().translateSegment(seg.id);
+    maybeRefine(rec.id);
   };
 
   return {
@@ -116,12 +206,14 @@ export const useStore = create<State>((set, get) => {
     recordings: [],
     segments: [],
     questions: [],
+    summaries: [],
     tool: 'pen',
     color: '#1f2937',
     size: 2.2,
     zoom: 1,
     fingerDraw: false,
     showOrder: false,
+    overview: false,
     undoStack: [],
     redoStack: [],
     activeRec: null,
@@ -133,33 +225,52 @@ export const useStore = create<State>((set, get) => {
     replayT: null,
     flash: null,
     scrollTo: null,
+    importing: null,
+    viewPage: 1,
+    pageOrder: [],
+    refining: null,
+    refineError: null,
+    summarizing: null,
+    translatingAll: false,
     ask: null,
 
     openDoc: async (id) => {
       if (get().activeRec) await get().stopRecording();
       audio.pause();
-      const reset = { undoStack: [], redoStack: [], replayT: null, playingRecId: null, ask: null, partial: '' };
+      const reset = { undoStack: [], redoStack: [], replayT: null, playingRecId: null, ask: null, partial: '', viewPage: 1, pageOrder: [] };
       if (!id) {
-        set({ docId: null, strokes: [], recordings: [], segments: [], questions: [], ...reset });
+        set({ docId: null, strokes: [], recordings: [], segments: [], questions: [], summaries: [], ...reset });
         return;
       }
-      const [strokes, recordings, segments, questions] = await Promise.all([
+      const [strokes, recordings, segments, questions, summaries] = await Promise.all([
         db.strokes.where('docId').equals(id).toArray(),
         db.recordings.where('docId').equals(id).sortBy('startedAt'),
         db.segments.where('docId').equals(id).sortBy('start'),
         db.questions.where('docId').equals(id).sortBy('createdAt'),
+        db.summaries.where('docId').equals(id).toArray(),
       ]);
-      set({ docId: id, strokes, recordings, segments, questions, ...reset });
+      set({ docId: id, strokes, recordings, segments, questions, summaries, ...reset });
     },
 
     // Highlighter with a dark ink colour looks like grey mud; default it to yellow.
     setTool: (tool) =>
       set(tool === 'highlighter' && ['#1f2937', '#2563eb', '#9333ea'].includes(get().color) ? { tool, color: '#f59e0b' } : { tool }),
+    // Apple Pencil double-tap: eraser ↔ the tool in use before it.
+    toggleEraser: () => {
+      const { tool } = get();
+      if (tool === 'eraser') set({ tool: toolBeforeEraser });
+      else {
+        toolBeforeEraser = tool === 'lasso' ? 'pen' : tool;
+        set({ tool: 'eraser' });
+      }
+    },
     setColor: (color) => set({ color, tool: get().tool === 'eraser' || get().tool === 'lasso' ? 'pen' : get().tool }),
     setSize: (size) => set({ size }),
     setZoom: (zoom) => set({ zoom }),
     setFingerDraw: (fingerDraw) => set({ fingerDraw }),
     setShowOrder: (showOrder) => set({ showOrder }),
+    setOverview: (overview) => set({ overview }),
+    goToPage: (page) => set({ overview: false, scrollTo: { page, y: 0, nonce: Math.random(), jump: true } }),
     setSidePanelTab: (sidePanelTab) => set({ sidePanelTab }),
 
     recTime: () => {
@@ -167,21 +278,24 @@ export const useStore = create<State>((set, get) => {
       return activeRec ? (performance.now() - recStartPerf) / 1000 : undefined;
     },
 
-    addStroke: (s) => {
+    addStroke: (s, opts) => {
       const { docId, activeRec } = get();
       if (!docId) return;
+      const at = opts?.at ?? Date.now();
+      const rt = get().recTime();
       const stroke: Stroke = {
         ...s,
-        id: uid(),
+        id: opts?.id ?? uid(),
         docId,
-        createdAt: Date.now(),
+        createdAt: at,
         recId: activeRec?.id,
-        t: get().recTime(),
+        t: rt == null ? undefined : Math.max(0, rt - (Date.now() - at) / 1000),
       };
       const op: Op = { type: 'add', strokes: [stroke] };
       set((st) => ({ strokes: [...st.strokes, stroke], undoStack: [...st.undoStack, op], redoStack: [] }));
       db.strokes.put(stroke);
       db.docs.update(docId, { updatedAt: Date.now() });
+      return stroke;
     },
 
     deleteStrokes: (ids) => {
@@ -221,8 +335,11 @@ export const useStore = create<State>((set, get) => {
       const { docId } = get();
       if (!docId || get().activeRec) return;
       audio.pause();
-      const rec: Recording = { id: uid(), docId, startedAt: Date.now(), mimeType: 'audio/mp4' };
-      set({ captionError: null, partial: '' });
+      const rec: Recording = { id: uid(), docId, startedAt: Date.now(), mimeType: 'audio/mp4', pageLog: [{ t: 0, page: get().viewPage }] };
+      set({ captionError: null, partial: '', refineError: null });
+      if (loadSettings().refine) {
+        engineProblem().then((p) => p && set({ refineError: p, captionError: `다듬은 번역 없이 녹음해요: ${p}` }));
+      }
 
       if (isNative) {
         // Native side records to an m4a and transcribes the same mic stream on-device.
@@ -293,6 +410,172 @@ export const useStore = create<State>((set, get) => {
         partial: '',
         recordings: st.recordings.map((r) => (r.id === activeRec.id ? { ...r, endedAt } : r)),
       }));
+      if (loadSettings().refine && !get().refineError) {
+        // Finish the last lines, then write the lecture summary.
+        refineChain.then(() => get().refineAll(activeRec.id)).then(() => get().summarizeRec(activeRec.id));
+      }
+    },
+
+    setViewPage: (page) => {
+      if (page === get().viewPage) return;
+      set({ viewPage: page });
+      const rec = get().activeRec;
+      const t = get().recTime();
+      if (!rec || t == null) return;
+      const pageLog = [...(rec.pageLog ?? []), { t, page }];
+      set((st) => ({
+        activeRec: { ...rec, pageLog },
+        recordings: st.recordings.map((r) => (r.id === rec.id ? { ...r, pageLog } : r)),
+      }));
+      db.recordings.update(rec.id, { pageLog });
+    },
+
+    setPageOrder: (pageOrder) => set({ pageOrder }),
+
+    // A blank page goes right after the page on screen.
+    addBlankPage: async () => {
+      const { docId, pageOrder, viewPage } = get();
+      if (!docId || !pageOrder.length) return;
+      const key = Math.min(0, ...pageOrder) - 1;
+      const order = [...pageOrder];
+      order.splice(order.indexOf(viewPage) + 1, 0, key);
+      set({ pageOrder: order });
+      await db.docs.update(docId, { pages: order });
+      get().goToPage(key);
+    },
+
+    deleteBlankPage: async (key) => {
+      const { docId, pageOrder } = get();
+      if (!docId || key >= 0) return;
+      const order = pageOrder.filter((k) => k !== key);
+      const gone = get().strokes.filter((s) => s.page === key).map((s) => s.id);
+      set((st) => ({ pageOrder: order, strokes: st.strokes.filter((s) => s.page !== key) }));
+      await db.strokes.bulkDelete(gone);
+      await db.docs.update(docId, { pages: order });
+    },
+
+    refineAll: async (recId) => {
+      if (get().refining) return;
+      const problem = await engineProblem();
+      if (problem) {
+        set({ captionError: problem });
+        return;
+      }
+      const total = unrefined(recId).length;
+      set({ refining: { done: 0, total }, refineError: null, captionError: null });
+      try {
+        for (let batch = unrefined(recId).slice(0, 8); batch.length; batch = unrefined(recId).slice(0, 8)) {
+          await refineBatch(recId, batch);
+          set({ refining: { done: total - unrefined(recId).length, total } });
+        }
+      } catch (e) {
+        set({ captionError: `다듬은 번역 실패: ${errMsg(e)}` });
+      } finally {
+        set({ refining: null });
+      }
+    },
+
+    // Summary of pages from..to (positions as shown): their slides plus whatever was said while they were on screen.
+    summarizeRange: async (from, to) => {
+      const { docId, pageOrder } = get();
+      if (!docId || get().summarizing) return;
+      const problem = await engineProblem();
+      if (problem) {
+        set({ captionError: problem });
+        return;
+      }
+      const keys = pageOrder.slice(from - 1, to);
+      const inRange = new Set(keys);
+      const id = `range:${docId}:${from}-${to}`;
+      const lines: string[] = [];
+      get().recordings.forEach((rec, i) => {
+        if (!rec.pageLog?.length) return; // imported audio has no record of which page was on screen
+        for (const s of get().segments.filter((x) => x.recId === rec.id).sort((a, b) => a.start - b.start)) {
+          if (inRange.has(pageAt(rec.id, s.start))) lines.push(`[녹음${i + 1} ${fmtTime(s.start)}] ${s.text}`);
+        }
+      });
+      const slides = (await Promise.all(keys.map(async (k, i) => `### p.${from + i}\n${await pageText(k)}`))).join('\n\n');
+      set({ summarizing: { recId: id, msg: '요약 준비 중…' } });
+      try {
+        const text = await summarize(lines.join('\n'), slides, (msg) => set({ summarizing: { recId: id, msg } }));
+        const sum: Summary = { recId: id, docId, text, createdAt: Date.now() };
+        await db.summaries.put(sum);
+        set((st) => ({ summaries: [...st.summaries.filter((x) => x.recId !== id), sum] }));
+        return id;
+      } catch (e) {
+        set({ captionError: `요약 실패: ${errMsg(e)}` });
+      } finally {
+        set({ summarizing: null });
+      }
+    },
+
+    summarizeRec: async (recId) => {
+      if (get().summarizing) return;
+      const problem = await engineProblem();
+      if (problem) {
+        set({ captionError: problem });
+        return;
+      }
+      const rec = get().recordings.find((r) => r.id === recId);
+      const segs = get().segments.filter((s) => s.recId === recId).sort((a, b) => a.start - b.start);
+      if (!rec || !segs.length) return;
+      const transcript = segs.map((s) => `[${fmtTime(s.start)}] ${s.text}`).join('\n');
+      const pages = [...new Set((rec.pageLog ?? []).map((e) => e.page))].sort((a, b) => a - b).slice(0, 30);
+      const slides = (await Promise.all(pages.map(async (p) => `### p.${p}\n${await pageText(p)}`))).join('\n\n');
+      set({ summarizing: { recId, msg: '요약 준비 중…' } });
+      try {
+        const text = await summarize(transcript, slides, (msg) => set({ summarizing: { recId, msg } }));
+        const sum: Summary = { recId, docId: rec.docId, text, createdAt: Date.now() };
+        await db.summaries.put(sum);
+        set((st) => ({ summaries: [...st.summaries.filter((x) => x.recId !== recId), sum] }));
+      } catch (e) {
+        set({ captionError: `요약 실패: ${errMsg(e)}` });
+      } finally {
+        set({ summarizing: null });
+      }
+    },
+
+    importRecording: async () => {
+      const { docId } = get();
+      if (!docId || !isNative || get().importing) return;
+      let f;
+      try {
+        f = await LectureAudio.pickAudio();
+      } catch (e) {
+        if ((e as { code?: string }).code === 'CANCELED') return;
+        throw e;
+      }
+      const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
+      const mimeType = { mp3: 'audio/mpeg', wav: 'audio/wav', aac: 'audio/aac', caf: 'audio/x-caf' }[ext] ?? 'audio/mp4';
+      const rec: Recording = { id: uid(), docId, startedAt: f.createdAt, endedAt: f.createdAt + f.duration * 1000, mimeType, name: f.name };
+      await db.chunks.add({ recId: rec.id, seq: 0, data: await nativeFileBlob(f.uri) });
+      await db.recordings.put(rec);
+      set((st) => ({
+        recordings: [...st.recordings, rec].sort((a, b) => a.startedAt - b.startedAt),
+        importing: { seconds: 0, duration: f.duration },
+        captionError: null,
+        sidePanelTab: 'transcript',
+      }));
+      const h = await LectureAudio.addListener('fileProgress', (e) =>
+        set((st) => ({ importing: st.importing && { ...st.importing, seconds: e.seconds } })),
+      );
+      try {
+        const { segments } = await LectureAudio.transcribeFile({ path: f.path, vocabulary: VOCABULARY });
+        const segs: Segment[] = segments.map((s) => ({ id: uid(), docId, recId: rec.id, ...s }));
+        await db.segments.bulkPut(segs);
+        set((st) => ({ segments: [...st.segments, ...segs] }));
+        if (loadSettings().refine && !(await engineProblem())) {
+          await get().refineAll(rec.id);
+          await get().summarizeRec(rec.id);
+        } else {
+          await get().translateAll(rec.id);
+        }
+      } catch (e) {
+        set({ captionError: e instanceof Error ? e.message : String(e) });
+      } finally {
+        h.remove();
+        set({ importing: null });
+      }
     },
 
     playAt: async (recId, t) => {
@@ -328,6 +611,20 @@ export const useStore = create<State>((set, get) => {
       }
     },
 
+    // Fill in missing Korean lines one by one; stop at the first failure (its error is shown).
+    translateAll: async (recId) => {
+      if (get().translatingAll) return;
+      set({ translatingAll: true, captionError: null });
+      try {
+        for (const s of get().segments.filter((x) => x.recId === recId && !x.ko)) {
+          await get().translateSegment(s.id);
+          if (!get().segments.find((x) => x.id === s.id)?.ko) break;
+        }
+      } finally {
+        set({ translatingAll: false });
+      }
+    },
+
     openAsk: (ask) => set({ ask, tool: get().tool === 'lasso' && ask ? 'lasso' : get().tool }),
 
     saveQuestion: async (q) => {
@@ -349,3 +646,12 @@ export const useStore = create<State>((set, get) => {
     },
   };
 });
+
+if (isNative) {
+  let lastTap = 0;
+  LectureAudio.addListener('pencilDoubleTap', () => {
+    if (performance.now() - lastTap < 300) return; // one physical tap, even if both delegate callbacks fire
+    lastTap = performance.now();
+    useStore.getState().toggleEraser();
+  });
+}
