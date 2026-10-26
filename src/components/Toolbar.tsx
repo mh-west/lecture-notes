@@ -24,17 +24,23 @@ function RecButton() {
   const stop = useStore((s) => s.stopRecording);
   const [, tick] = useState(0);
   const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false); // starting: the mic and permissions can take a moment
 
-  const onStart = () =>
-    start().then(
-      () => setErr(null),
-      (e) => {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.error('startRecording failed:', msg);
-        setErr(msg);
-        alert(`녹음을 시작하지 못했어요\n\n${msg}`);
-      },
-    );
+  const onStart = () => {
+    if (busy) return;
+    setBusy(true);
+    start()
+      .then(
+        () => setErr(null),
+        (e) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error('startRecording failed:', msg);
+          setErr(msg);
+          alert(`녹음을 시작하지 못했어요\n\n${msg}`);
+        },
+      )
+      .finally(() => setBusy(false));
+  };
 
   useEffect(() => {
     if (!activeRec) return;
@@ -44,14 +50,21 @@ function RecButton() {
 
   if (activeRec) {
     return (
-      <button className="rec on" onClick={stop}>
-        <span className="dot" /> {fmtTime(useStore.getState().recTime() ?? 0)} 정지
+      <button
+        className="rec on"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          stop().finally(() => setBusy(false));
+        }}
+      >
+        <span className="dot" /> {busy ? '저장 중…' : `${fmtTime(useStore.getState().recTime() ?? 0)} 정지`}
       </button>
     );
   }
   return (
-    <button className="rec" title={err ?? '녹음 시작'} onClick={onStart}>
-      <span className="dot" /> 녹음{err ? ' (오류)' : ''}
+    <button className="rec" title={err ?? '녹음 시작'} onClick={onStart} disabled={busy}>
+      <span className="dot" /> {busy ? '준비 중…' : `녹음${err ? ' (오류)' : ''}`}
     </button>
   );
 }

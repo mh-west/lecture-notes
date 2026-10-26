@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Run ipad-install.sh every hour in the background, so plugging the iPad into this Mac keeps the app signed.
+# Run ipad-install.sh every 15 minutes in the background, so plugging the iPad into this Mac keeps the app signed.
 # Undo with: launchctl bootout gui/$(id -u)/kr.ac.snu.lecturenotes.install && rm ~/Library/LaunchAgents/kr.ac.snu.lecturenotes.install.plist
 set -euo pipefail
 
@@ -15,7 +15,7 @@ cat >"$PLIST" <<PLIST
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key>
   <array><string>/bin/zsh</string><string>-lc</string><string>"$SCRIPT"</string></array>
-  <key>StartInterval</key><integer>3600</integer>
+  <key>StartInterval</key><integer>900</integer>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>$HOME/Library/Logs/lecture-notes-install.log</string>
   <key>StandardErrorPath</key><string>$HOME/Library/Logs/lecture-notes-install.log</string>

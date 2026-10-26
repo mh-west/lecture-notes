@@ -9,6 +9,7 @@ export interface Doc {
   updatedAt: number;
   courseId?: string;
   terms?: string[]; // technical terms auto-extracted from the PDF text (speech-recognition hints)
+  termsV?: number; // extraction rules the terms were made with (re-extracted when they change)
 }
 
 /** A folder of PDFs for one class. Its info steers caption recognition, summaries and AI questions. */

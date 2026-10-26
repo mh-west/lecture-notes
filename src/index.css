@@ -8,6 +8,8 @@
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; }
 body { background: var(--bg); -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+/* iPad WebKit won't let you type into a field whose page disables text selection: re-enable it for fields. */
+input, textarea, select, [contenteditable] { -webkit-user-select: text; user-select: text; }
 button {
   font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--panel); color: var(--text);
   border-radius: 8px; padding: 6px 10px; min-height: 36px; cursor: pointer; white-space: nowrap; flex-shrink: 0;
@@ -203,3 +205,4 @@ button.big { min-height: 46px; font-size: 16px; font-weight: 600; }
 .field input { font: inherit; font-weight: 400; font-size: 15px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; -webkit-user-select: text; user-select: text; }
 .field textarea { font-weight: 400; }
 .small-chip { min-height: 28px; padding: 3px 8px; font-size: 12px; }
+.library-tools { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: -8px 0 12px; font-size: 13px; }

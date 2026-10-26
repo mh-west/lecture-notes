@@ -24,7 +24,7 @@ interface LectureAudioPlugin {
   stop(): Promise<{ uri: string; path: string }>;
   translate(opts: { text: string }): Promise<{ text: string }>;
   pickAudio(): Promise<{ uri: string; path: string; name: string; duration: number; createdAt: number }>;
-  transcribeFile(opts: { path: string; vocabulary: string[] }): Promise<{ segments: { text: string; start: number; end: number }[] }>;
+  transcribeFile(opts: { path: string; vocabulary: string[]; locale?: string }): Promise<{ segments: { text: string; start: number; end: number }[] }>;
   llmStatus(): Promise<{ available: boolean; reason?: string }>;
   llmTranslateLines(opts: { instructions: string; prompt: string; count: number }): Promise<{ lines: string[] }>;
   llmGenerate(opts: { instructions: string; prompt: string }): Promise<{ text: string }>;

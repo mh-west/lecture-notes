@@ -63,10 +63,29 @@ The captions are speech-recognition output: they contain filler words, false sta
 - Keep formulas and symbols as they are.
 - Return one entry for every caption line, using its number.`;
 
+/** The course the lecture belongs to and its key terms (the folder's own plus those found in its PDFs). */
+export interface Glossary {
+  course?: string;
+  subject?: string;
+  terms: string[];
+}
+
+function glossaryText(g: Glossary | undefined, maxTerms: number): string[] {
+  if (!g) return [];
+  const out: string[] = [];
+  if (g.course) out.push(`## Course: ${g.course}${g.subject ? ` — ${g.subject}` : ''}`);
+  if (g.terms.length) {
+    out.push('## Key terms of this course (the speech recognition may mishear them; use these spellings)', g.terms.slice(0, maxTerms).join(', '));
+  }
+  return out;
+}
+
 const clip = (s: string | undefined, n: number) => (s && s.length > n ? `${s.slice(0, n)} …` : (s ?? ''));
 
-function translatePrompt(lines: string[], ctx: PageContext | null, before: string[], big: boolean) {
+function translatePrompt(lines: string[], ctx: PageContext | null, before: string[], big: boolean, g?: Glossary) {
   const parts = ['## Captions to translate', ...lines.map((l, i) => `${i + 1}. ${l}`)];
+  const gl = glossaryText(g, big ? 100 : 25);
+  if (gl.length) parts.push('', ...gl);
   if (before.length) parts.push('', '## What the professor said just before (context only, do not translate)', ...before);
   if (ctx) {
     parts.push('', `## Slide the professor is showing (page ${ctx.page})`, clip(ctx.current, big ? 4000 : 1800));
@@ -87,16 +106,16 @@ const APPLE_TRANSLATE_INSTRUCTIONS = `너는 영어 수학 강의 자막을 한�
 - 입력 줄마다 번호와 함께 하나씩 돌려준다.`;
 
 /** Natural Korean for each caption line; '' for lines that were only filler. */
-export async function translateLines(lines: string[], ctx: PageContext | null, before: string[]): Promise<string[]> {
+export async function translateLines(lines: string[], ctx: PageContext | null, before: string[], g?: Glossary): Promise<string[]> {
   const s = loadSettings();
   if (s.engine === 'apple') {
-    const prompt = translatePrompt(lines, ctx, before.slice(-2), false);
+    const prompt = translatePrompt(lines, ctx, before.slice(-2), false, g);
     const { lines: out } = await LectureAudio.llmTranslateLines({ instructions: APPLE_TRANSLATE_INSTRUCTIONS, prompt, count: lines.length });
     return out;
   }
   const text = await claude(
     `${TRANSLATE_INSTRUCTIONS}\nOutput format: one line per caption, "<number>: <Korean>" (nothing after the colon for filler-only lines). No other text.`,
-    translatePrompt(lines, ctx, before, true),
+    translatePrompt(lines, ctx, before, true, g),
     'low',
   );
   const out = Array<string>(lines.length).fill('');
@@ -114,15 +133,17 @@ Write a summary in Korean, in Markdown:
 ## 다룬 내용 (in lecture order; for each part give the time like [12:30] and slide page like p.241, the key definitions/theorems/ideas, and how the argument goes)
 ## 교수님이 강조한 점
 ## 복습할 때 확인할 것 (questions or gaps worth checking)
-For technical terms, keep the English word where Korean students normally use it (martingale, Brownian motion, filtration …) and use Korean for everyday mathematical words; write every formula in LaTeX: inline as $...$ and displayed equations as $$...$$ on their own line (no \\( \\) or \\[ \\]). Be faithful to what was said; do not invent content that is not in the transcript or slides.`;
+For technical terms, keep the English word where Korean students normally use it (martingale, Brownian motion, filtration …) and use Korean for everyday mathematical words; write every formula in LaTeX: inline as $...$ and displayed equations as $$...$$ on their own line (no \\( \\) or \\[ \\]). Use the course's key-term list to restore misheard terms. Be faithful to what was said; do not invent content that is not in the transcript or slides.`;
 
 /** A Korean Markdown summary of the lecture. `transcript` has one "[mm:ss] text" line per caption. */
-export async function summarize(transcript: string, slides: string, onProgress?: (msg: string) => void): Promise<string> {
+export async function summarize(transcript: string, slides: string, onProgress?: (msg: string) => void, g?: Glossary): Promise<string> {
   const s = loadSettings();
   if (s.engine === 'claude') {
     onProgress?.('Claude가 요약하는 중…');
-    return claude(SUMMARY_INSTRUCTIONS, `## Slides\n${clip(slides, 60000)}\n\n## Transcript\n${transcript}`, 'medium');
+    const gl = glossaryText(g, 100).join('\n');
+    return claude(SUMMARY_INSTRUCTIONS, `${gl ? `${gl}\n\n` : ''}## Slides\n${clip(slides, 60000)}\n\n## Transcript\n${transcript}`, 'medium');
   }
+  const terms = glossaryText(g, 25).join('\n');
   // The on-device model sees ~4k tokens at a time: summarise in pieces, then combine.
   // With no lecture audio for the range, summarise the slides themselves.
   const source = transcript.trim() ? transcript : slides;
@@ -141,7 +162,7 @@ export async function summarize(transcript: string, slides: string, onProgress?:
     onProgress?.(`부분 요약 ${i + 1} / ${pieces.length}`);
     const { text } = await LectureAudio.llmGenerate({
       instructions: 'You summarise part of a mathematics lecture transcript (speech recognition, may contain filler and misheard terms) into short Korean bullet points. Keep the [mm:ss] time of each point. Only include what was actually said.',
-      prompt: p,
+      prompt: terms ? `${terms}\n\n${p}` : p,
     });
     notes.push(text);
   }

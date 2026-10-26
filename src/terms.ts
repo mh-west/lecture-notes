@@ -4,7 +4,10 @@ import { VOCABULARY, VOCABULARY_KO } from './vocab';
 
 // Common words that are never worth biasing the recogniser towards.
 const STOP = new Set(
-  `the and for are but not you all any can had her was one our out day get has him his how man new now old see two way who boy did its let put say she too use that with have this will your from they know want been good much some time very when come here just like long make many more only over such take than them well were what where which while would there their these those then into also each about after again other could first because between through during before under should being both same most still even does done made using used given gives give thus hence since let's lets note example examples proof theorem lemma definition remark corollary proposition section chapter page figure table equation exercise problem solution case cases follows following shown show suppose assume assumption consider recall define defined denote denoted therefore however where whenever every itself value values number numbers function functions result results form general simple order part point points term terms model models method methods data lecture lectures slide slides homework assignment today class week weeks cont continued review midterm final exam quiz chapter introduction summary outline`.split(/\s+/),
+  `the and for are but not you all any can had her was one our out day get has him his how man new now old see two way who boy did its let put say she too use that with have this will your from they know want been good much some time very when come here just like long make many more only over such take than them well were what where which while would there their these those then into also each about after again other could first because between through during before under should being both same most still even does done made using used given gives give thus hence since let's lets note example examples proof theorem lemma definition remark corollary proposition section chapter page figure table equation exercise problem solution case cases follows following shown show suppose assume assumption consider recall define defined denote denoted therefore however where whenever every itself value values number numbers function functions result results form general simple order part point points term terms model models method methods data lecture lectures slide slides homework assignment today class week weeks cont continued review midterm final exam quiz chapter introduction summary outline
+   moreover furthermore consequently indeed implies imply implied hence holds hold called step steps exists exist satisfies satisfy
+   particular arbitrary positive negative zero finite infinite sets set condition conditions property properties similarly clearly
+   obviously namely respectively analogously otherwise whereas thereby assume assumed suppose supposed obtain obtained yields`.split(/\s+/),
 );
 const KO_PARTICLE = /(은|는|이|가|을|를|의|에|에서|으로|로|와|과|도|만|에게|까지|부터|이다|입니다|하는|한다|된다|하고)$/;
 
@@ -44,10 +47,12 @@ export async function pdfAllText(pdf: PDFDoc, maxPages = 60): Promise<string> {
 }
 
 /** Extract and cache a document's terms the first time it's opened. */
+const TERMS_V = 2; // bump when extractTerms changes, so saved lists are redone
+
 export async function ensureDocTerms(doc: Doc, pdf: PDFDoc): Promise<string[]> {
-  if (doc.terms) return doc.terms;
+  if (doc.terms && doc.termsV === TERMS_V) return doc.terms;
   const terms = extractTerms(await pdfAllText(pdf));
-  await db.docs.update(doc.id, { terms });
+  await db.docs.update(doc.id, { terms, termsV: TERMS_V });
   return terms;
 }
 

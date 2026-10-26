@@ -1,7 +1,8 @@
+import { Directory, Filesystem } from '@capacitor/filesystem';
 import { create } from 'zustand';
 import { db, recordingBlob, uid, type Course, type LectureLang, type Question, type Recording, type Segment, type Stroke, type Summary } from './db';
 import { fmtTime } from './ink';
-import { engineProblem, loadSettings, summarize, translateLines, type PageContext } from './llm';
+import { engineProblem, loadSettings, summarize, translateLines, type Glossary, type PageContext } from './llm';
 import { currentPdf, pageText } from './pdf';
 import { isNative, LectureAudio, nativeFileBlob, type TranscriptEvent } from './native';
 import { startWebSpeech, webSpeechAvailable } from './transcribe-web';
@@ -104,6 +105,10 @@ interface State {
   setPageOrder: (order: number[]) => void;
   addBlankPage: () => Promise<void>;
   deleteBlankPage: (key: number) => Promise<void>;
+  /** Removes a recording with its audio, captions and summary; strokes written during it stay, untimed. */
+  deleteRecording: (recId: string) => Promise<void>;
+  /** Transcribe a finished recording again in another language (e.g. a Korean lecture recorded as English). */
+  retranscribe: (recId: string, lang: LectureLang) => Promise<void>;
   refineAll: (recId: string) => Promise<void>;
   summarizeRec: (recId: string) => Promise<void>;
   summarizeRange: (from: number, to: number) => Promise<string | undefined>;
@@ -129,8 +134,17 @@ let wakeLock: WakeLockSentinel | null = null;
 let stopCaptions: (() => void) | null = null;
 let seq = 0;
 let refineChain: Promise<void> = Promise.resolve();
+let stopping = false; // a stop is in progress; repeated taps are ignored
 let toolBeforeEraser: Tool = 'pen';
 const inFlight = new Set<string>(); // segment ids being refined
+
+const blobBase64 = (b: Blob) =>
+  new Promise<string>((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] ?? '');
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(b);
+  });
 
 const errMsg = (e: unknown) => {
   // Keep the stack in the device log; WebKit's "undefined is not a function" says nothing on its own.
@@ -174,6 +188,13 @@ export const useStore = create<State>((set, get) => {
     return { page, current, prev, next };
   };
 
+  /** Course name/subject and key terms (folder terms + terms found in its PDFs) for translation and summaries. */
+  const glossary = async (): Promise<Glossary | undefined> => {
+    const { docId, course, lang } = get();
+    if (!docId) return undefined;
+    return { course: course?.name, subject: course?.subject, terms: await recognitionVocabulary(docId, course, lang) };
+  };
+
   const unrefined = (recId: string) =>
     get().segments.filter((s) => s.recId === recId && s.ko2 === undefined && !inFlight.has(s.id)).sort((a, b) => a.start - b.start);
 
@@ -184,7 +205,7 @@ export const useStore = create<State>((set, get) => {
       .slice(-4)
       .map((s) => s.text);
     const ctx = await pageContext(pageAt(recId, (batch[0].start + batch[batch.length - 1].end) / 2));
-    const out = await translateLines(batch.map((s) => s.text), ctx, before);
+    const out = await translateLines(batch.map((s) => s.text), ctx, before, await glossary());
     const ko2 = new Map(batch.map((s, i) => [s.id, out[i] ?? '']));
     set((st) => ({ segments: st.segments.map((s) => (ko2.has(s.id) ? { ...s, ko2: ko2.get(s.id) } : s)) }));
     await Promise.all(batch.map((s) => db.segments.update(s.id, { ko2: ko2.get(s.id) })));
@@ -205,6 +226,41 @@ export const useStore = create<State>((set, get) => {
         batch.forEach((s) => inFlight.delete(s.id));
         maybeRefine(recId, flush);
       });
+  };
+
+  // Stop the recorder and keep the audio. Always clears the recording state, even when the native side
+  // had already stopped (a second tap, or after a crash), so the app can never stay stuck "recording".
+  const finishRecording = async (activeRec: Recording) => {
+    if (isNative) {
+      try {
+        const { uri } = await LectureAudio.stop();
+        await db.chunks.add({ recId: activeRec.id, seq: 0, data: await nativeFileBlob(uri) });
+        Filesystem.deleteFile({ path: uri }).catch(() => {}); // the app's database now holds the audio
+      } catch (e) {
+        set({ captionError: `녹음을 저장하지 못했어요: ${errMsg(e)}` });
+      }
+      stopCaptions?.();
+    } else if (recorder) {
+      const r = recorder;
+      stopCaptions?.();
+      await new Promise<void>((resolve) => {
+        r.onstop = () => resolve();
+        r.stop();
+      });
+      stream?.getTracks().forEach((t) => t.stop());
+    }
+    wakeLock?.release().catch(() => {});
+    recorder = null;
+    stream = null;
+    wakeLock = null;
+    stopCaptions = null;
+    const endedAt = Date.now();
+    await db.recordings.update(activeRec.id, { endedAt });
+    set((st) => ({
+      activeRec: null,
+      partial: '',
+      recordings: st.recordings.map((r) => (r.id === activeRec.id ? { ...r, endedAt } : r)),
+    }));
   };
 
   const onCaption = (rec: Recording) => (e: TranscriptEvent) => {
@@ -424,32 +480,13 @@ export const useStore = create<State>((set, get) => {
 
     stopRecording: async () => {
       const { activeRec } = get();
-      if (!activeRec) return;
-      if (isNative) {
-        const { uri } = await LectureAudio.stop();
-        stopCaptions?.();
-        await db.chunks.add({ recId: activeRec.id, seq: 0, data: await nativeFileBlob(uri) });
-      } else if (recorder) {
-        const r = recorder;
-        stopCaptions?.();
-        await new Promise<void>((resolve) => {
-          r.onstop = () => resolve();
-          r.stop();
-        });
-        stream?.getTracks().forEach((t) => t.stop());
+      if (!activeRec || stopping) return;
+      stopping = true;
+      try {
+        await finishRecording(activeRec);
+      } finally {
+        stopping = false;
       }
-      wakeLock?.release().catch(() => {});
-      recorder = null;
-      stream = null;
-      wakeLock = null;
-      stopCaptions = null;
-      const endedAt = Date.now();
-      await db.recordings.update(activeRec.id, { endedAt });
-      set((st) => ({
-        activeRec: null,
-        partial: '',
-        recordings: st.recordings.map((r) => (r.id === activeRec.id ? { ...r, endedAt } : r)),
-      }));
       if (loadSettings().refine && !get().refineError) {
         // Finish the last lines (English lectures only), then write the lecture summary.
         const korean = activeRec.lang === 'ko-KR';
@@ -485,6 +522,79 @@ export const useStore = create<State>((set, get) => {
       set({ pageOrder: order });
       await db.docs.update(docId, { pages: order });
       get().goToPage(key);
+    },
+
+    retranscribe: async (recId, lang) => {
+      const { docId } = get();
+      const rec = get().recordings.find((r) => r.id === recId);
+      if (!docId || !rec || !isNative || get().importing || get().activeRec?.id === recId) return;
+      const blob = await recordingBlob(rec);
+      // The speech model reads a file: write the saved audio out for it.
+      const { uri } = await Filesystem.writeFile({ path: `redo-${recId}.m4a`, data: await blobBase64(blob), directory: Directory.Cache });
+      const duration = rec.endedAt ? (rec.endedAt - rec.startedAt) / 1000 : 0;
+      set({ importing: { seconds: 0, duration }, captionError: null, sidePanelTab: 'transcript' });
+      const h = await LectureAudio.addListener('fileProgress', (e) =>
+        set((st) => ({ importing: st.importing && { ...st.importing, seconds: e.seconds } })),
+      );
+      try {
+        const vocabulary = await recognitionVocabulary(docId, get().course, lang);
+        const { segments } = await LectureAudio.transcribeFile({ path: decodeURIComponent(new URL(uri).pathname), vocabulary, locale: lang });
+        const segs: Segment[] = segments.map((x) => ({ id: uid(), docId, recId, ...x }));
+        await db.transaction('rw', [db.segments, db.summaries, db.recordings], async () => {
+          await db.segments.where('recId').equals(recId).delete();
+          await db.segments.bulkPut(segs);
+          await db.summaries.delete(recId); // it described the old captions
+          await db.recordings.update(recId, { lang });
+        });
+        set((st) => ({
+          segments: [...st.segments.filter((x) => x.recId !== recId), ...segs],
+          summaries: st.summaries.filter((x) => x.recId !== recId),
+          recordings: st.recordings.map((r) => (r.id === recId ? { ...r, lang } : r)),
+        }));
+      } catch (e) {
+        set({ captionError: `다시 받지 못했어요: ${errMsg(e)}` });
+        return;
+      } finally {
+        h.remove();
+        Filesystem.deleteFile({ path: uri }).catch(() => {});
+        set({ importing: null });
+      }
+      // Same follow-up as a fresh recording: English gets refined translations, both get a summary.
+      if (loadSettings().refine && !(await engineProblem())) {
+        if (lang !== 'ko-KR') await get().refineAll(recId);
+        await get().summarizeRec(recId);
+      } else if (lang !== 'ko-KR') {
+        await get().translateAll(recId);
+      }
+    },
+
+    deleteRecording: async (recId) => {
+      const { docId } = get();
+      if (!docId || get().activeRec?.id === recId) return;
+      if (audioRecId === recId) {
+        audio.pause();
+        audio.removeAttribute('src');
+        audioRecId = null;
+      }
+      const untime = (s: Stroke): Stroke => (s.recId === recId ? { ...s, recId: undefined, t: undefined } : s);
+      await db.transaction('rw', [db.recordings, db.chunks, db.segments, db.summaries, db.strokes], async () => {
+        await db.chunks.where('recId').equals(recId).delete();
+        await db.segments.where('recId').equals(recId).delete();
+        await db.summaries.delete(recId);
+        await db.strokes.where('docId').equals(docId).filter((s) => s.recId === recId).modify((s) => {
+          delete s.recId;
+          delete s.t;
+        });
+        await db.recordings.delete(recId);
+      });
+      set((st) => ({
+        recordings: st.recordings.filter((r) => r.id !== recId),
+        segments: st.segments.filter((x) => x.recId !== recId),
+        summaries: st.summaries.filter((x) => x.recId !== recId),
+        strokes: st.strokes.map(untime),
+        playingRecId: st.playingRecId === recId ? null : st.playingRecId,
+        replayT: st.playingRecId === recId ? null : st.replayT,
+      }));
     },
 
     deleteBlankPage: async (key) => {
@@ -540,7 +650,7 @@ export const useStore = create<State>((set, get) => {
       const slides = (await Promise.all(keys.map(async (k, i) => `### p.${from + i}\n${await pageText(k)}`))).join('\n\n');
       set({ summarizing: { recId: id, msg: '요약 준비 중…' } });
       try {
-        const text = await summarize(lines.join('\n'), slides, (msg) => set({ summarizing: { recId: id, msg } }));
+        const text = await summarize(lines.join('\n'), slides, (msg) => set({ summarizing: { recId: id, msg } }), await glossary());
         const sum: Summary = { recId: id, docId, text, createdAt: Date.now() };
         await db.summaries.put(sum);
         set((st) => ({ summaries: [...st.summaries.filter((x) => x.recId !== id), sum] }));
@@ -567,7 +677,7 @@ export const useStore = create<State>((set, get) => {
       const slides = (await Promise.all(pages.map(async (p) => `### p.${p}\n${await pageText(p)}`))).join('\n\n');
       set({ summarizing: { recId, msg: '요약 준비 중…' } });
       try {
-        const text = await summarize(transcript, slides, (msg) => set({ summarizing: { recId, msg } }));
+        const text = await summarize(transcript, slides, (msg) => set({ summarizing: { recId, msg } }), await glossary());
         const sum: Summary = { recId, docId: rec.docId, text, createdAt: Date.now() };
         await db.summaries.put(sum);
         set((st) => ({ summaries: [...st.summaries.filter((x) => x.recId !== recId), sum] }));
@@ -618,6 +728,7 @@ export const useStore = create<State>((set, get) => {
         set({ captionError: e instanceof Error ? e.message : String(e) });
       } finally {
         h.remove();
+        Filesystem.deleteFile({ path: f.uri }).catch(() => {}); // kept only until transcribed; the database has it
         set({ importing: null });
       }
     },

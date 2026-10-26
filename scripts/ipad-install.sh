@@ -3,18 +3,20 @@
 #
 # Development builds signed with a free Apple ID stop opening when their 7-day provisioning profile
 # expires, and reinstalling with the same profile doesn't move that date. So this script is meant to
-# run regularly (see enable-auto-install.sh): when an iPad is connected and the installed build has
-# less than 2 days left, it drops the old profile so Xcode issues a fresh one, then rebuilds and installs.
-# Pass --force to install right now.
+# run regularly (see enable-auto-install.sh): whenever an iPad is connected and the installed build has
+# less than 6 days left, it drops the old profile so Xcode issues a fresh 7-day one, then rebuilds and
+# installs — so connecting the iPad on any day pushes the deadline to a week from then (at most once a
+# day). Pass --force to install right now (a fresh profile is still only requested when it would help).
 set -euo pipefail
 
 REPO=${0:A:h:h}
 STATE="$HOME/Library/Application Support/lecture-notes"
 EXPIRES="$STATE/installed-expires" # epoch seconds when the installed build stops opening
+ATTEMPT="$STATE/last-renewal"      # epoch seconds of the last automatic renewal attempt
 BUILD="$HOME/Library/Caches/lecture-notes-build"
 PROFILES="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
 APP_ID=kr.ac.snu.lecturenotes
-RENEW_BEFORE=$((2 * 86400))
+RENEW_BEFORE=$((6 * 86400)) # renew when less than this is left: about once a day while connected
 mkdir -p "$STATE"
 
 log() { echo "$(date '+%F %T') $*"; }
@@ -30,9 +32,27 @@ if [[ -z $device ]]; then
   exit 0
 fi
 now=$(date +%s)
-if [[ ${1:-} != --force && -f $EXPIRES ]] && (( $(<"$EXPIRES") - now > RENEW_BEFORE )); then
-  log "installed build is good until $(date -r $(<"$EXPIRES") '+%F %R'), nothing to do"
-  exit 0
+if [[ ${1:-} != --force ]]; then
+  if [[ -f $EXPIRES ]] && (( $(<"$EXPIRES") - now > RENEW_BEFORE )); then
+    log "installed build is good until $(date -r $(<"$EXPIRES") '+%F %R'), nothing to do"
+    exit 0
+  fi
+  # Once a day at most: if Apple hands back the same profile, don't reinstall every 15 minutes.
+  if [[ -f $ATTEMPT ]] && (( now - $(<"$ATTEMPT") < 20 * 3600 )); then
+    log "already renewed today, nothing to do"
+    exit 0
+  fi
+  # Never close the app in the middle of a lecture (the app keeps this marker while recording).
+  marker=$(mktemp -d)
+  if xcrun devicectl device copy from --device "$device" --domain-type appDataContainer \
+      --domain-identifier "$APP_ID" --source Documents/.recording-active --destination "$marker/m" >/dev/null 2>&1 \
+      && (( now - $(<"$marker/m") < 4 * 3600 )); then
+    rm -rf "$marker"
+    log "a lecture is being recorded, trying again later"
+    exit 0
+  fi
+  rm -rf "$marker"
+  echo "$now" >"$ATTEMPT"
 fi
 
 # A profile close to expiry would just be reused; remove it so Xcode makes a new 7-day one.

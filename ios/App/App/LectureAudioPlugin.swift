@@ -41,6 +41,7 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var fileURL: URL?
     private var transcriber: LiveTranscriber?
     private var recording = false
+    private var starting = false // a start() is still setting up; a second tap must not start twice
 
     // MARK: app signing
 
@@ -158,7 +159,8 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     // MARK: recording + transcription
 
     @objc func start(_ call: CAPPluginCall) {
-        if recording { return call.reject("이미 녹음 중이에요") }
+        if recording || starting { return call.reject("이미 녹음을 시작하고 있어요") }
+        starting = true
         let vocabulary = call.getArray("vocabulary", String.self) ?? []
         let locale = Locale(identifier: call.getString("locale") ?? "en-US")
 
@@ -200,28 +202,34 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                     t = ModernTranscriber(locale: supported, onResult: onResult, onError: onError)
                     used = "speechanalyzer"
                 }
+                // Record first, answer the button, then let the speech model start up in the background:
+                // it can take seconds (or download first), and the lecture must not wait for it. Captions
+                // just begin a moment later.
+                self.file = audioFile
+                self.fileURL = url
+                self.transcriber = t
+                input.removeTap(onBus: 0) // a tap left behind would make installTap throw
+                input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+                    guard let self else { return }
+                    try? self.file?.write(from: buffer)
+                    self.transcriber?.append(buffer)
+                }
+                engine.prepare()
+                try engine.start()
+                recording = true
+                starting = false
+                RecordingMarker.set(true) // tells scripts/ipad-install.sh not to reinstall mid-lecture
+                await MainActor.run { UIApplication.shared.isIdleTimerDisabled = true } // keep screen on in class
+                call.resolve(["engine": used, "locale": locale.identifier])
                 // Transcription failing (e.g. model still downloading) must not stop the recording.
                 do {
                     try await t.start(vocabulary: vocabulary)
                 } catch {
                     onError("자막을 시작하지 못했어요: \(error.localizedDescription)")
                 }
-
-                input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-                    guard let self else { return }
-                    try? self.file?.write(from: buffer)
-                    self.transcriber?.append(buffer)
-                }
-                self.file = audioFile
-                self.fileURL = url
-                self.transcriber = t
-                engine.prepare()
-                try engine.start()
-                recording = true
-                await MainActor.run { UIApplication.shared.isIdleTimerDisabled = true } // keep screen on in class
-                call.resolve(["engine": used, "locale": locale.identifier])
             } catch {
                 engine.inputNode.removeTap(onBus: 0)
+                starting = false
                 call.reject("녹음을 시작할 수 없어요: \(error.localizedDescription)")
             }
         }
@@ -232,16 +240,17 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         recording = false
+        RecordingMarker.set(false)
         let t = transcriber
         transcriber = nil
         file = nil // closing the file finalises the m4a
         fileURL = nil
         DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = false }
-        Task {
-            await t?.stop()
-            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-            call.resolve(["uri": url.absoluteString, "path": url.path])
-        }
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        // The m4a is complete once the file is closed: answer now. Letting the speech model finish its
+        // last captions can take a long while (or never end if it was still starting up).
+        call.resolve(["uri": url.absoluteString, "path": url.path])
+        Task { await t?.stop() }
     }
 
     // MARK: importing an existing recording (e.g. exported from Goodnotes)
@@ -283,12 +292,13 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func transcribeFile(_ call: CAPPluginCall) {
         guard let path = call.getString("path") else { return call.reject("path required") }
         let vocabulary = call.getArray("vocabulary", String.self) ?? []
+        let locale = Locale(identifier: call.getString("locale") ?? "en-US")
         guard #available(iOS 26.0, *) else {
             return call.unavailable("녹음 파일 자막은 iPadOS 26 이상에서 지원돼요")
         }
         Task {
             do {
-                let segments = try await FileTranscriber.run(url: URL(fileURLWithPath: path), vocabulary: vocabulary) { [weak self] t in
+                let segments = try await FileTranscriber.run(url: URL(fileURLWithPath: path), locale: locale, vocabulary: vocabulary) { [weak self] t in
                     self?.notifyListeners("fileProgress", data: ["seconds": t])
                 }
                 call.resolve(["segments": segments])
@@ -641,6 +651,16 @@ extension UIColor {
     }
 }
 
+/// Documents/.recording-active exists (holding the start time) while a lecture is being recorded.
+/// The Mac's auto-reinstall script reads it so it never closes the app in the middle of a lecture.
+enum RecordingMarker {
+    static func set(_ on: Bool) {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent(".recording-active")
+        if on { try? String(Int(Date().timeIntervalSince1970)).write(to: url, atomically: true, encoding: .utf8) }
+        else { try? FileManager.default.removeItem(at: url) }
+    }
+}
+
 final class PencilTapDelegate: NSObject, UIPencilInteractionDelegate {
     private let onTap: () -> Void
     init(onTap: @escaping () -> Void) { self.onTap = onTap }
@@ -664,8 +684,10 @@ final class AudioPickerDelegate: NSObject, UIDocumentPickerDelegate {
 
 @available(iOS 26.0, *)
 enum FileTranscriber {
-    static func run(url: URL, vocabulary: [String], progress: @escaping (Double) -> Void) async throws -> [[String: Any]] {
-        let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: "en-US")) ?? Locale(identifier: "en-US")
+    static func run(url: URL, locale wanted: Locale, vocabulary: [String], progress: @escaping (Double) -> Void) async throws -> [[String: Any]] {
+        guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: wanted) else {
+            throw PluginError("이 기기에서 \(wanted.identifier) 음성 인식을 쓸 수 없어요")
+        }
         let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [],
                                             attributeOptions: [.audioTimeRange])
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {

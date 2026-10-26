@@ -1,6 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useRef, useState } from 'react';
 import { db, importPdf, uid, type Course, type Doc } from '../db';
+import { exportCourses, importCourses } from '../courseFile';
 import ExpiryBanner from './ExpiryBanner';
 import Features from './Features';
 
@@ -19,6 +20,23 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
   const docs = useLiveQuery(() => db.docs.orderBy('updatedAt').reverse().toArray(), []);
   const courses = useLiveQuery(() => db.courses.orderBy('createdAt').toArray(), []);
   const input = useRef<HTMLInputElement>(null);
+  const courseInput = useRef<HTMLInputElement>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const say = (e: unknown) => setNotice(`⚠️ ${e instanceof Error ? e.message : String(e)}`);
+  const exportFolders = () =>
+    exportCourses().then((n) => setNotice(n ? `폴더 ${n}개를 파일로 내보냈어요` : '내보낼 과목 폴더가 없어요'), say);
+  const importFolders = async (files: FileList | null) => {
+    const f = files?.[0];
+    if (courseInput.current) courseInput.current.value = '';
+    if (!f) return;
+    try {
+      const { added, updated } = await importCourses(f);
+      setNotice(`폴더 가져오기 완료: 새 폴더 ${added}개, 업데이트 ${updated}개`);
+    } catch (e) {
+      say(e);
+    }
+  };
   const [showFeatures, setShowFeatures] = useState(firstVisit);
   const [target, setTarget] = useState<string | undefined>(); // course the next picked PDFs go into
   const [editing, setEditing] = useState<Course | 'new' | null>(null);
@@ -70,6 +88,13 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
         </div>
         <input ref={input} type="file" accept="application/pdf" multiple hidden onChange={(e) => add(e.target.files)} />
       </header>
+      <div className="library-tools">
+        <span className="muted">과목 폴더 정보를 다른 기기로 옮기기:</span>
+        <button className="link small" onClick={exportFolders}>파일로 내보내기</button>
+        <button className="link small" onClick={() => courseInput.current?.click()}>파일에서 가져오기</button>
+        <input ref={courseInput} type="file" accept="application/json,.json" hidden onChange={(e) => importFolders(e.target.files)} />
+      </div>
+      {notice && <div className="hint" onClick={() => setNotice(null)}>{notice}</div>}
       <ExpiryBanner />
       {docs && !docs.length && !courses?.length && (
         <p className="empty">

@@ -152,7 +152,11 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
     send();
     const ro = new ResizeObserver(send);
     ro.observe(document.body);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      // Off whenever this view goes away (back to the library, say), or it would keep taking touches there.
+      LectureAudio.setInkPreview({ enabled: false, color, width: 1, highlighter: false, area: { x: 0, y: 0, w: 0, h: 0 } }).catch(() => {});
+    };
   }, [tool, color, size, displayWidth, maxW, containerW, overview, asking, modalOpen, fingerDraw]);
 
   // Pinch zoom, shared by web touches and the native layer's forwarded pinch: scale the pages with a

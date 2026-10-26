@@ -162,6 +162,8 @@ function Transcript() {
   const openAsk = useStore((s) => s.openAsk);
   const translateSegment = useStore((s) => s.translateSegment);
   const importRecording = useStore((s) => s.importRecording);
+  const deleteRecording = useStore((s) => s.deleteRecording);
+  const retranscribe = useStore((s) => s.retranscribe);
   const importing = useStore((s) => s.importing);
   const translateAll = useStore((s) => s.translateAll);
   const translatingAll = useStore((s) => s.translatingAll);
@@ -204,6 +206,33 @@ function Transcript() {
         <label className="check">
           <input type="checkbox" checked={showKo} onChange={(e) => setShowKo(e.target.checked)} /> 번역
         </label>
+        {recId && recId !== activeRec?.id && (
+          <button
+            className="danger"
+            title="이 녹음 삭제"
+            onClick={() => {
+              const n = recordings.findIndex((r) => r.id === recId) + 1;
+              if (confirm(`녹음 ${n}을(를) 삭제할까요?\n오디오·자막·번역·요약이 함께 지워져요. 그때 쓴 필기는 남아요.`)) {
+                setChosen(null);
+                deleteRecording(recId);
+              }
+            }}
+          >
+            🗑
+          </button>
+        )}
+        {isNative && recId && recId !== activeRec?.id && !importing && (
+          <button
+            title="이 녹음의 자막을 다른 언어로 다시 받기"
+            onClick={() => {
+              const to = korean ? 'en-US' : 'ko-KR';
+              const label = to === 'ko-KR' ? '한국어' : '영어';
+              if (confirm(`이 녹음을 ${label} 강의로 보고 자막을 다시 만들까요?\n지금 자막·번역·요약은 새 것으로 바뀌어요.`)) retranscribe(recId, to);
+            }}
+          >
+            {korean ? '영어로 다시' : '한국어로 다시'}
+          </button>
+        )}
         {isNative && (
           <button
             title="다른 앱에서 내보낸 녹음 파일 가져오기"
