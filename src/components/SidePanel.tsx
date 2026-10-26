@@ -3,6 +3,7 @@ import { buildSummaryPrompt, shareQuestion } from '../ask';
 import { db, type Segment } from '../db';
 import { loadSettings } from '../llm';
 import Markdown from './Markdown';
+import TermsPanel from './TermsPanel';
 import { isNative } from '../native';
 import { currentPdf } from '../pdf';
 import { pdfAllText } from '../terms';
@@ -441,6 +442,7 @@ export default function SidePanel() {
         <button className={tab === 'summary' ? 'active' : ''} onClick={() => setTab('summary')}>요약</button>
         <button className={tab === 'order' ? 'active' : ''} onClick={() => setTab('order')}>필기 순서</button>
         <button className={tab === 'ai' ? 'active' : ''} onClick={() => setTab('ai')}>AI 질문{qCount ? ` ${qCount}` : ''}</button>
+        <button className={tab === 'terms' ? 'active' : ''} onClick={() => setTab('terms')}>용어</button>
       </div>
       {tab === 'transcript' && <Transcript />}
       {tab === 'summary' && <LectureSummary />}
@@ -452,6 +454,7 @@ export default function SidePanel() {
         </>
       )}
       {tab === 'ai' && <Questions />}
+      {tab === 'terms' && <TermsPanel />}
     </aside>
   );
 }

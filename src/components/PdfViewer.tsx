@@ -101,6 +101,7 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
         useStore.getState().setPageOrder(saved?.length ? saved : s.map((_, i) => i + 1));
         setSizes(s);
         currentPdf.doc = doc;
+        currentPdf.ocr = rec.ocrPages; // scanned PDF: page text read earlier with OCR
         setPdf(doc);
         ensureDocTerms(rec, doc).catch(() => {}); // background: speech hints for this lecture
       } catch (e) {

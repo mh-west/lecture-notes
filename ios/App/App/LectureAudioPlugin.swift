@@ -4,6 +4,7 @@ import Foundation
 import Speech
 import SwiftUI
 import UIKit
+import Vision
 import PencilKit
 import UIKit.UIGestureRecognizerSubclass
 import UniformTypeIdentifiers
@@ -34,6 +35,7 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setInkPreview", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearInkPreview", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "renderInk", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "ocrImage", returnType: CAPPluginReturnPromise),
     ]
 
     private let engine = AVAudioEngine()
@@ -42,6 +44,27 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var transcriber: LiveTranscriber?
     private var recording = false
     private var starting = false // a start() is still setting up; a second tap must not start twice
+
+    // MARK: text recognition (scanned PDFs)
+
+    /// Reads the text in a page image (base64 PNG/JPEG) with Vision, Korean and English. Returns { text }.
+    @objc func ocrImage(_ call: CAPPluginCall) {
+        guard let b64 = call.getString("image"), let data = Data(base64Encoded: b64),
+              let image = UIImage(data: data)?.cgImage else { return call.reject("image required") }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.recognitionLanguages = ["ko-KR", "en-US"]
+            request.usesLanguageCorrection = true
+            do {
+                try VNImageRequestHandler(cgImage: image).perform([request])
+                let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+                call.resolve(["text": lines.joined(separator: "\n")])
+            } catch {
+                call.reject("글자를 읽지 못했어요: \(error.localizedDescription)")
+            }
+        }
+    }
 
     // MARK: app signing
 

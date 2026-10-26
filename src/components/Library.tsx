@@ -2,10 +2,26 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { useRef, useState } from 'react';
 import { db, importPdf, uid, type Course, type Doc } from '../db';
 import { exportCourses, importCourses } from '../courseFile';
+import { docTerms } from '../terms';
 import ExpiryBanner from './ExpiryBanner';
 import Features from './Features';
 
 const SEEN_KEY = 'featuresSeen';
+const COLLAPSED_KEY = 'collapsedFolders';
+function lsList(k: string): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(k) ?? '[]');
+  } catch {
+    return [];
+  }
+}
+function lsSave(k: string, v: string[]) {
+  try {
+    localStorage.setItem(k, JSON.stringify(v));
+  } catch {
+    /* storage unavailable: folding just isn't remembered */
+  }
+}
 function firstVisit() {
   try {
     if (localStorage.getItem(SEEN_KEY)) return false;
@@ -22,6 +38,16 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
   const input = useRef<HTMLInputElement>(null);
   const courseInput = useRef<HTMLInputElement>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Folders folded shut (their PDFs hidden); remembered on this device.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(lsList(COLLAPSED_KEY)));
+  const toggle = (id: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      lsSave(COLLAPSED_KEY, [...next]);
+      return next;
+    });
 
   const say = (e: unknown) => setNotice(`⚠️ ${e instanceof Error ? e.message : String(e)}`);
   const exportFolders = () =>
@@ -105,19 +131,24 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
       {sections.map(({ course, docs: list }) => (
         <section key={course?.id ?? 'unfiled'} className="course">
           <div className="course-head">
-            <div className="course-title">
+            <button
+              className="course-title"
+              aria-expanded={!collapsed.has(course?.id ?? 'unfiled')}
+              onClick={() => toggle(course?.id ?? 'unfiled')}
+            >
+              <span className="chevron">{collapsed.has(course?.id ?? 'unfiled') ? '▸' : '▾'}</span>
               <span className="folder">📁</span>
-              <b>{course?.name ?? '분류 안 됨'}</b>
+              <b>{course?.name ?? '메인'}</b>
               {course && <span className="badge">{course.lang === 'ko-KR' ? '한국어' : 'English'}</span>}
               <span className="muted">{list.length}개</span>
-            </div>
+            </button>
             <div className="row-wrap">
               {course && <button onClick={() => setEditing(course)}>⚙ 과목 설정</button>}
               <button onClick={() => pick(course?.id)}>+ PDF</button>
             </div>
           </div>
-          {course?.subject && <div className="course-subject muted">{course.subject}</div>}
-          <ul className="doc-list">
+          {!collapsed.has(course?.id ?? 'unfiled') && course?.subject && <div className="course-subject muted">{course.subject}</div>}
+          {!collapsed.has(course?.id ?? 'unfiled') && <ul className="doc-list">
             {list.map((d) => (
               <li key={d.id}>
                 <button className="doc" onClick={() => onOpen(d.id)}>
@@ -127,7 +158,7 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
                 </button>
                 {!!courses?.length && (
                   <select value={d.courseId ?? ''} onChange={(e) => move(d.id, e.target.value)} aria-label="과목 폴더로 이동">
-                    <option value="">분류 안 됨</option>
+                    <option value="">메인</option>
                     {courses.map((c) => (
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
@@ -137,7 +168,7 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
               </li>
             ))}
             {!list.length && <li className="muted empty-row">PDF가 없어요</li>}
-          </ul>
+          </ul>}
         </section>
       ))}
 
@@ -158,7 +189,7 @@ function CourseDialog({ course, onClose }: { course: Course | null; onClose: () 
     if (!course) return [];
     const docs = await db.docs.where('courseId').equals(course.id).toArray();
     const count = new Map<string, number>();
-    for (const d of docs) for (const t of d.terms ?? []) count.set(t, (count.get(t) ?? 0) + 1);
+    for (const d of docs) for (const t of docTerms(d)) count.set(t, (count.get(t) ?? 0) + 1);
     return [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([t]) => t);
   }, [course?.id]);
 
@@ -174,7 +205,7 @@ function CourseDialog({ course, onClose }: { course: Course | null; onClose: () 
   };
 
   const remove = async () => {
-    if (!course || !confirm(`"${course.name}" 폴더를 삭제할까요? 안의 PDF는 "분류 안 됨"으로 옮겨져요.`)) return;
+    if (!course || !confirm(`"${course.name}" 폴더를 삭제할까요? 안의 PDF는 "메인"으로 옮겨져요.`)) return;
     await db.transaction('rw', [db.docs, db.courses], async () => {
       await db.docs.where('courseId').equals(course.id).modify({ courseId: undefined });
       await db.courses.delete(course.id);

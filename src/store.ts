@@ -60,7 +60,7 @@ interface State {
   recStartPerf: number;
   partial: string; // caption text not yet finalised
   captionError: string | null;
-  sidePanelTab: 'order' | 'transcript' | 'summary' | 'ai';
+  sidePanelTab: 'order' | 'transcript' | 'summary' | 'terms' | 'ai';
   sideOpen: boolean;
   lang: LectureLang; // lecture language: per-document override, else the course's language
   course: Course | null; // folder the open PDF belongs to

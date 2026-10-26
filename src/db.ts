@@ -10,6 +10,9 @@ export interface Doc {
   courseId?: string;
   terms?: string[]; // technical terms auto-extracted from the PDF text (speech-recognition hints)
   termsV?: number; // extraction rules the terms were made with (re-extracted when they change)
+  termsAdded?: string[]; // terms the user added for this PDF
+  termsRemoved?: string[]; // auto-extracted terms the user removed (kept out even after re-extraction)
+  ocrPages?: string[]; // text read from page images when the PDF has no text layer (scans)
 }
 
 /** A folder of PDFs for one class. Its info steers caption recognition, summaries and AI questions. */

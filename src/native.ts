@@ -29,6 +29,7 @@ interface LectureAudioPlugin {
   llmTranslateLines(opts: { instructions: string; prompt: string; count: number }): Promise<{ lines: string[] }>;
   llmGenerate(opts: { instructions: string; prompt: string }): Promise<{ text: string }>;
   signingInfo(): Promise<{ expires?: number }>;
+  ocrImage(opts: { image: string }): Promise<{ text: string }>;
   setInkPreview(opts: { enabled: boolean; color: string; width: number; highlighter: boolean; area: { x: number; y: number; w: number; h: number } }): Promise<void>;
   clearInkPreview(): Promise<void>;
   renderInk(opts: { items: { id: string; data: string; k: number }[]; pixelRatio: number }): Promise<{ images: Record<string, string> }>;

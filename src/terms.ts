@@ -1,6 +1,6 @@
 import { db, type Course, type Doc, type LectureLang } from './db';
-import type { PDFDoc } from './pdf';
-import { VOCABULARY, VOCABULARY_KO } from './vocab';
+import { isNative, LectureAudio } from './native';
+import { currentPdf, pageImage, type PDFDoc } from './pdf';
 
 // Common words that are never worth biasing the recogniser towards.
 const STOP = new Set(
@@ -37,7 +37,7 @@ export function extractTerms(text: string, max = 60): string[] {
     .map(([k]) => k);
 }
 
-export async function pdfAllText(pdf: PDFDoc, maxPages = 60): Promise<string> {
+export async function pdfAllText(pdf: PDFDoc, maxPages = 500): Promise<string> {
   const parts: string[] = [];
   for (let i = 1; i <= Math.min(pdf.numPages, maxPages); i++) {
     const content = await (await pdf.getPage(i)).getTextContent();
@@ -47,30 +47,61 @@ export async function pdfAllText(pdf: PDFDoc, maxPages = 60): Promise<string> {
 }
 
 /** Extract and cache a document's terms the first time it's opened. */
-const TERMS_V = 2; // bump when extractTerms changes, so saved lists are redone
+const TERMS_V = 4; // bump when extraction changes, so saved lists are redone (4: scanned PDFs are read with OCR)
+
+/**
+ * A scanned PDF has (almost) no text layer. On the iPad its pages are read with Vision text
+ * recognition once (up to 60 pages) and kept on the document, so terms, translation, summaries and
+ * AI questions get the page text too.
+ */
+async function ocrPdf(doc: Doc, pdf: PDFDoc): Promise<string[]> {
+  if (doc.ocrPages?.length) return doc.ocrPages;
+  const pages: string[] = [];
+  for (let i = 1; i <= Math.min(pdf.numPages, 60); i++) {
+    try {
+      pages.push((await LectureAudio.ocrImage({ image: await pageImage(pdf, i) })).text);
+    } catch {
+      pages.push('');
+    }
+  }
+  await db.docs.update(doc.id, { ocrPages: pages });
+  return pages;
+}
 
 export async function ensureDocTerms(doc: Doc, pdf: PDFDoc): Promise<string[]> {
+  if (doc.ocrPages?.length && currentPdf.doc === pdf) currentPdf.ocr = doc.ocrPages;
   if (doc.terms && doc.termsV === TERMS_V) return doc.terms;
-  const terms = extractTerms(await pdfAllText(pdf));
+  let text = await pdfAllText(pdf);
+  if (isNative && text.replace(/\s/g, '').length < 30 * Math.min(pdf.numPages, 500)) {
+    const ocr = await ocrPdf(doc, pdf);
+    if (currentPdf.doc === pdf) currentPdf.ocr = ocr;
+    text = ocr.join('\n');
+  }
+  const terms = extractTerms(text);
   await db.docs.update(doc.id, { terms, termsV: TERMS_V });
   return terms;
+}
+
+/** This PDF's terms as the user wants them: extracted ones minus those removed, plus those added. */
+export function docTerms(doc: Doc | undefined): string[] {
+  if (!doc) return [];
+  const removed = new Set((doc.termsRemoved ?? []).map((t) => t.toLowerCase()));
+  return [...new Set([...(doc.termsAdded ?? []), ...(doc.terms ?? []).filter((t) => !removed.has(t.toLowerCase()))])];
 }
 
 /**
  * Hints for the speech recogniser: the course's own terms first, then terms from this PDF,
  * then from the course's other PDFs. Apple recommends keeping this list short (~100).
  */
-export async function recognitionVocabulary(docId: string, course: Course | null, lang: LectureLang): Promise<string[]> {
+export async function recognitionVocabulary(docId: string, course: Course | null, _lang: LectureLang): Promise<string[]> {
   const doc = await db.docs.get(docId);
   const siblings = course ? (await db.docs.where('courseId').equals(course.id).toArray()).filter((d) => d.id !== docId) : [];
   const fromSiblings = new Map<string, number>();
-  for (const d of siblings) for (const t of d.terms ?? []) fromSiblings.set(t, (fromSiblings.get(t) ?? 0) + 1);
-  const base = course ? [] : lang === 'ko-KR' ? VOCABULARY_KO : VOCABULARY; // unfiled PDFs keep the SDE defaults
+  for (const d of siblings) for (const t of docTerms(d)) fromSiblings.set(t, (fromSiblings.get(t) ?? 0) + 1);
   const ordered = [
     ...(course?.vocab ?? []),
-    ...(doc?.terms ?? []),
+    ...docTerms(doc),
     ...[...fromSiblings.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t),
-    ...base,
   ];
   return [...new Set(ordered.map((t) => t.trim()).filter(Boolean))].slice(0, 100);
 }
