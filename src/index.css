@@ -25,7 +25,9 @@ select { font: inherit; font-size: 14px; padding: 6px; border-radius: 8px; borde
 
 .app { display: flex; flex-direction: column; height: 100%; }
 .toolbar {
-  display: flex; align-items: center; gap: 6px; padding: 8px 10px; padding-top: max(8px, env(safe-area-inset-top));
+  display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+  /* An empty band under the status bar, so the window's top edge is easy to double-tap (iPadOS windows). */
+  padding-top: calc(env(safe-area-inset-top) + 18px);
   background: var(--panel); border-bottom: 1px solid var(--line); overflow-x: auto; flex-shrink: 0;
 }
 .toolbar .title { font-weight: 600; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
@@ -68,7 +70,7 @@ select { font: inherit; font-size: 14px; padding: 6px; border-radius: 8px; borde
 .timeline li:active { background: var(--accent-soft); }
 .timeline .num { min-width: 24px; height: 24px; border-radius: 12px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
 
-.library { max-width: 720px; margin: 0 auto; padding: 24px 16px; height: 100%; overflow-y: auto; }
+.library { max-width: 720px; margin: 0 auto; padding: 24px 16px; padding-top: calc(env(safe-area-inset-top) + 34px); height: 100%; overflow-y: auto; }
 .library header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .library h1 { font-size: 24px; margin: 0; }
 .doc-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }

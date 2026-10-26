@@ -389,7 +389,8 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
           style={{ left: flashBox.x * scale, top: flashBox.y * scale, width: flashBox.w * scale, height: flashBox.h * scale }}
         />
       )}
-      <div className="page-num">{label}</div>
+      {/* PDF pages carry their own printed numbers; only added blank pages get a label. */}
+      {pageNum < 0 && <div className="page-num">빈 페이지 · {label}</div>}
     </div>
   );
 }
