@@ -1,11 +1,26 @@
 import { create } from 'zustand';
-import { db, recordingBlob, uid, type Question, type Recording, type Segment, type Stroke, type Summary } from './db';
+import { db, recordingBlob, uid, type Course, type LectureLang, type Question, type Recording, type Segment, type Stroke, type Summary } from './db';
 import { fmtTime } from './ink';
 import { engineProblem, loadSettings, summarize, translateLines, type PageContext } from './llm';
 import { currentPdf, pageText } from './pdf';
 import { isNative, LectureAudio, nativeFileBlob, type TranscriptEvent } from './native';
 import { startWebSpeech, webSpeechAvailable } from './transcribe-web';
-import { VOCABULARY } from './vocab';
+import { recognitionVocabulary } from './terms';
+
+function lsGet(k: string) {
+  try {
+    return localStorage.getItem(k);
+  } catch {
+    return null;
+  }
+}
+function lsSet(k: string, v: string) {
+  try {
+    localStorage.setItem(k, v);
+  } catch {
+    /* private mode */
+  }
+}
 
 export type Tool = 'pen' | 'highlighter' | 'eraser' | 'lasso';
 
@@ -45,6 +60,9 @@ interface State {
   partial: string; // caption text not yet finalised
   captionError: string | null;
   sidePanelTab: 'order' | 'transcript' | 'summary' | 'ai';
+  sideOpen: boolean;
+  lang: LectureLang; // lecture language: per-document override, else the course's language
+  course: Course | null; // folder the open PDF belongs to
 
   // playback / review
   playingRecId: string | null;
@@ -71,6 +89,8 @@ interface State {
   setOverview: (v: boolean) => void;
   goToPage: (page: number) => void;
   setSidePanelTab: (t: State['sidePanelTab']) => void;
+  setSideOpen: (v: boolean) => void;
+  setLang: (l: LectureLang) => void;
   /** `at`: when the stroke was started (wall clock ms), if earlier than now; `id`: preassigned id. */
   addStroke: (s: Omit<Stroke, 'id' | 'docId' | 'createdAt' | 'recId' | 't'>, opts?: { at?: number; id?: string }) => Stroke | undefined;
   deleteStrokes: (ids: string[]) => void;
@@ -196,8 +216,11 @@ export const useStore = create<State>((set, get) => {
     const seg: Segment = { id: uid(), docId: rec.docId, recId: rec.id, start: e.start, end: e.end, text: e.text };
     set((st) => ({ segments: [...st.segments, seg], partial: '' }));
     db.segments.put(seg);
-    if (isNative) get().translateSegment(seg.id);
-    maybeRefine(rec.id);
+    // Korean lectures need no translation.
+    if (rec.lang !== 'ko-KR') {
+      if (isNative) get().translateSegment(seg.id);
+      maybeRefine(rec.id);
+    }
   };
 
   return {
@@ -221,6 +244,9 @@ export const useStore = create<State>((set, get) => {
     partial: '',
     captionError: null,
     sidePanelTab: 'transcript',
+    sideOpen: lsGet('sideOpen') !== '0',
+    lang: 'en-US',
+    course: null,
     playingRecId: null,
     replayT: null,
     flash: null,
@@ -239,7 +265,7 @@ export const useStore = create<State>((set, get) => {
       audio.pause();
       const reset = { undoStack: [], redoStack: [], replayT: null, playingRecId: null, ask: null, partial: '', viewPage: 1, pageOrder: [] };
       if (!id) {
-        set({ docId: null, strokes: [], recordings: [], segments: [], questions: [], summaries: [], ...reset });
+        set({ docId: null, strokes: [], recordings: [], segments: [], questions: [], summaries: [], course: null, ...reset });
         return;
       }
       const [strokes, recordings, segments, questions, summaries] = await Promise.all([
@@ -249,7 +275,11 @@ export const useStore = create<State>((set, get) => {
         db.questions.where('docId').equals(id).sortBy('createdAt'),
         db.summaries.where('docId').equals(id).toArray(),
       ]);
-      set({ docId: id, strokes, recordings, segments, questions, summaries, ...reset });
+      const doc = await db.docs.get(id);
+      const course = (doc?.courseId && (await db.courses.get(doc.courseId))) || null;
+      const saved = lsGet(`lang:${id}`);
+      const lang: LectureLang = saved === 'ko-KR' || saved === 'en-US' ? saved : (course?.lang ?? 'en-US');
+      set({ docId: id, strokes, recordings, segments, questions, summaries, lang, course, ...reset });
     },
 
     // Highlighter with a dark ink colour looks like grey mud; default it to yellow.
@@ -272,6 +302,15 @@ export const useStore = create<State>((set, get) => {
     setOverview: (overview) => set({ overview }),
     goToPage: (page) => set({ overview: false, scrollTo: { page, y: 0, nonce: Math.random(), jump: true } }),
     setSidePanelTab: (sidePanelTab) => set({ sidePanelTab }),
+    setSideOpen: (sideOpen) => {
+      lsSet('sideOpen', sideOpen ? '1' : '0');
+      set({ sideOpen });
+    },
+    setLang: (lang) => {
+      const { docId } = get();
+      if (docId) lsSet(`lang:${docId}`, lang);
+      set({ lang });
+    },
 
     recTime: () => {
       const { activeRec, recStartPerf } = get();
@@ -335,9 +374,10 @@ export const useStore = create<State>((set, get) => {
       const { docId } = get();
       if (!docId || get().activeRec) return;
       audio.pause();
-      const rec: Recording = { id: uid(), docId, startedAt: Date.now(), mimeType: 'audio/mp4', pageLog: [{ t: 0, page: get().viewPage }] };
+      const lang = get().lang;
+      const rec: Recording = { id: uid(), docId, startedAt: Date.now(), mimeType: 'audio/mp4', lang, pageLog: [{ t: 0, page: get().viewPage }] };
       set({ captionError: null, partial: '', refineError: null });
-      if (loadSettings().refine) {
+      if (loadSettings().refine && lang !== 'ko-KR') {
         engineProblem().then((p) => p && set({ refineError: p, captionError: `다듬은 번역 없이 녹음해요: ${p}` }));
       }
 
@@ -352,7 +392,7 @@ export const useStore = create<State>((set, get) => {
           h2.remove();
         };
         if (!perm.speech) set({ captionError: '음성 인식 권한이 없어 자막 없이 녹음해요 (설정 > 강의노트)' });
-        await LectureAudio.start({ vocabulary: VOCABULARY });
+        await LectureAudio.start({ vocabulary: await recognitionVocabulary(docId, get().course, lang), locale: lang });
       } else {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true },
@@ -367,7 +407,7 @@ export const useStore = create<State>((set, get) => {
         // Flush every 5s so a crash or closed tab loses at most a few seconds of audio.
         recorder.start(5000);
         if (webSpeechAvailable()) {
-          stopCaptions = startWebSpeech(() => get().recTime() ?? 0, onCaption(rec), (m) => set({ captionError: `자막 오류: ${m}` }));
+          stopCaptions = startWebSpeech(lang, () => get().recTime() ?? 0, onCaption(rec), (m) => set({ captionError: `자막 오류: ${m}` }));
         } else {
           set({ captionError: '이 브라우저는 자막을 지원하지 않아요. iPad 앱에서는 기기 내 자막이 동작해요.' });
         }
@@ -411,8 +451,11 @@ export const useStore = create<State>((set, get) => {
         recordings: st.recordings.map((r) => (r.id === activeRec.id ? { ...r, endedAt } : r)),
       }));
       if (loadSettings().refine && !get().refineError) {
-        // Finish the last lines, then write the lecture summary.
-        refineChain.then(() => get().refineAll(activeRec.id)).then(() => get().summarizeRec(activeRec.id));
+        // Finish the last lines (English lectures only), then write the lecture summary.
+        const korean = activeRec.lang === 'ko-KR';
+        refineChain
+          .then(() => (korean ? undefined : get().refineAll(activeRec.id)))
+          .then(() => get().summarizeRec(activeRec.id));
       }
     },
 
@@ -560,7 +603,8 @@ export const useStore = create<State>((set, get) => {
         set((st) => ({ importing: st.importing && { ...st.importing, seconds: e.seconds } })),
       );
       try {
-        const { segments } = await LectureAudio.transcribeFile({ path: f.path, vocabulary: VOCABULARY });
+        const vocabulary = await recognitionVocabulary(docId, get().course, 'en-US'); // file transcription is English-only
+        const { segments } = await LectureAudio.transcribeFile({ path: f.path, vocabulary });
         const segs: Segment[] = segments.map((s) => ({ id: uid(), docId, recId: rec.id, ...s }));
         await db.segments.bulkPut(segs);
         set((st) => ({ segments: [...st.segments, ...segs] }));

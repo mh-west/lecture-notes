@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { buildSummaryPrompt, shareQuestion } from '../ask';
+import { db, type Segment } from '../db';
 import { loadSettings } from '../llm';
 import Markdown from './Markdown';
 import { isNative } from '../native';
+import { currentPdf } from '../pdf';
+import { pdfAllText } from '../terms';
 import { fmtTime, groupStrokes } from '../ink';
 import { audio, useStore } from '../store';
 
@@ -115,6 +119,38 @@ function Timeline() {
   );
 }
 
+/** Send the whole lecture transcript (+ course info and PDF text) to Claude / ChatGPT for a summary. */
+function SummaryButton({ recId, lines, korean }: { recId: string; lines: Segment[]; korean: boolean }) {
+  const course = useStore((s) => s.course);
+  const docId = useStore((s) => s.docId);
+  const recordings = useStore((s) => s.recordings);
+  const saveQuestion = useStore((s) => s.saveQuestion);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const run = async () => {
+    setStatus('준비 중…');
+    try {
+      const doc = docId ? await db.docs.get(docId) : undefined;
+      const pdfText = currentPdf.doc ? await pdfAllText(currentPdf.doc, 30) : '';
+      const prompt = buildSummaryPrompt({ captions: lines, docName: doc?.name ?? '', korean, course, pdfText });
+      const n = recordings.findIndex((r) => r.id === recId) + 1;
+      await saveQuestion({ prompt, label: `수업 요약 (녹음 ${n})`, recId, t: 0 });
+      await shareQuestion(prompt);
+      setStatus('공유했어요. 받은 요약은 "AI 질문" 탭에 붙여넣어 둘 수 있어요.');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatus(/cancel/i.test(msg) ? null : msg);
+    }
+  };
+
+  return (
+    <div className="summary-row">
+      <button onClick={run}>📝 수업 요약 → Claude / ChatGPT</button>
+      {status && <div className="muted">{status}</div>}
+    </div>
+  );
+}
+
 function Transcript() {
   const segments = useStore((s) => s.segments);
   const recordings = useStore((s) => s.recordings);
@@ -139,6 +175,7 @@ function Transcript() {
 
   const recId = activeRec?.id ?? chosen ?? playingRecId ?? recordings.at(-1)?.id ?? null;
   const lines = useMemo(() => segments.filter((s) => s.recId === recId), [segments, recId]);
+  const korean = recordings.find((r) => r.id === recId)?.lang === 'ko-KR';
 
   useEffect(() => {
     const on = () => setNow(audioRecIdMatches(recId) ? audio.currentTime : -1);
@@ -177,7 +214,7 @@ function Transcript() {
           </button>
         )}
       </div>
-      {showKo && recId && !activeRec && !importing && lines.some((l) => l.ko2 === undefined) && (
+      {showKo && !korean && recId && !activeRec && !importing && lines.some((l) => l.ko2 === undefined) && (
         <div className="hint">
           {refining
             ? `AI가 번역을 다듬는 중… ${refining.done} / ${refining.total}줄`
@@ -185,7 +222,7 @@ function Transcript() {
                 <button className="link small" onClick={() => refineAll(recId)}>AI로 다듬기</button></>}
         </div>
       )}
-      {isNative && showKo && recId && !activeRec && !importing && !loadSettings().refine && lines.some((l) => !l.ko) && (
+      {isNative && showKo && !korean && recId && !activeRec && !importing && !loadSettings().refine && lines.some((l) => !l.ko) && (
         <div className="hint">
           번역 안 된 줄 {lines.filter((l) => !l.ko).length}개{' '}
           <button className="link small" disabled={translatingAll} onClick={() => translateAll(recId)}>
@@ -198,6 +235,7 @@ function Transcript() {
           녹음 파일 자막 만드는 중… {fmtTime(importing.seconds)} / {fmtTime(importing.duration)}
         </div>
       )}
+      {lines.length > 0 && recId && <SummaryButton recId={recId} lines={lines} korean={korean} />}
       {captionError && <div className="warn">{captionError}</div>}
       {!lines.length && !partial && (
         <div className="hint">
@@ -220,7 +258,7 @@ function Transcript() {
             </button>
             <div className="line-body">
               <div className="en">{l.text}</div>
-              {showKo &&
+              {showKo && !korean &&
                 (l.ko2 !== undefined
                   ? l.ko2 && <div className="ko ai">{l.ko2}</div>
                   : l.ko

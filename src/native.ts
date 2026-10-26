@@ -20,7 +20,7 @@ export interface InkStrokeEvent {
 
 interface LectureAudioPlugin {
   prepare(): Promise<{ mic: boolean; speech: boolean; engine: 'speechanalyzer' | 'sfspeech' }>;
-  start(opts: { vocabulary: string[] }): Promise<{ engine: string }>;
+  start(opts: { vocabulary: string[]; locale: string }): Promise<{ engine: string; locale: string }>;
   stop(): Promise<{ uri: string; path: string }>;
   translate(opts: { text: string }): Promise<{ text: string }>;
   pickAudio(): Promise<{ uri: string; path: string; name: string; duration: number; createdAt: number }>;

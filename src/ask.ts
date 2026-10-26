@@ -1,7 +1,7 @@
 import { Clipboard } from '@capacitor/clipboard';
 import { Directory, Filesystem } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
-import type { Segment } from './db';
+import type { Course, Segment } from './db';
 import { fmtTime } from './ink';
 import { isNative } from './native';
 import type { Bounds } from './store';
@@ -43,6 +43,44 @@ export function nearbyCaptions(segments: Segment[], recId: string | undefined, t
   return segments.filter((s) => s.recId === recId && s.end >= t - before && s.start <= t + after);
 }
 
+function courseIntro(course: Course | null | undefined, docName: string, korean?: boolean) {
+  const lang = korean ? '한국어' : '영어';
+  if (!course) return `나는 대학원 수업 "Stochastic Differential Equations"를 듣고 있는 학생이야. 수업은 ${lang}로 진행돼. (강의 자료: ${docName})`;
+  const lines = [`나는 "${course.name}" 수업을 듣고 있는 학생이야. 수업은 ${lang}로 진행돼. (오늘 강의 자료: ${docName})`];
+  if (course.subject.trim()) lines.push(`[과목 정보]\n${course.subject.trim()}`);
+  if (course.vocab.length) lines.push(`[이 과목 주요 용어]\n${course.vocab.join(', ')}`);
+  return lines.join('\n\n');
+}
+
+/** Whole-lecture summary request built from the captions of one recording. */
+export function buildSummaryPrompt(opts: {
+  captions: Segment[];
+  docName: string;
+  korean: boolean;
+  course: Course | null;
+  pdfText?: string;
+}) {
+  const transcript = opts.captions.map((c) => `(${fmtTime(c.start)}) ${c.text}`).join('\n');
+  const parts = [
+    courseIntro(opts.course, opts.docName, opts.korean),
+    `아래는 오늘 수업 녹음의 자동 자막이야 (오인식이 있을 수 있으니 과목 맥락과 강의 자료에 맞게 바로잡아서 이해해줘).`,
+    `[수업 자막]\n${transcript}`,
+  ];
+  if (opts.pdfText) parts.push(`[강의 자료 PDF 텍스트 (일부)]\n${opts.pdfText.slice(0, 8000)}`);
+  parts.push(
+    [
+      '다음 형식으로 한국어로 정리해줘. 수식은 LaTeX, 수학·전문 용어는 영어를 병기해줘.',
+      '1. 한 문단 요약',
+      '2. 오늘 다룬 내용 흐름 (시간 표시와 함께, 정의·정리·유도 과정 중심)',
+      '3. 교수님이 강조한 부분 / 시험에 나올 만한 포인트',
+      ...(opts.korean ? [] : ['4. 이해가 어려웠을 만한 영어 표현을 문맥에 맞게 번역·설명']),
+      `${opts.korean ? 4 : 5}. 용어 정리 (영어 — 한국어 — 한 줄 뜻)`,
+      `${opts.korean ? 5 : 6}. 복습할 때 스스로 확인해볼 질문 3개`,
+    ].join('\n'),
+  );
+  return parts.join('\n\n');
+}
+
 export function buildPrompt(opts: {
   question: string;
   hasImage: boolean;
@@ -50,10 +88,10 @@ export function buildPrompt(opts: {
   focusLine?: string;
   pageText?: string;
   docName: string;
+  korean?: boolean;
+  course?: Course | null;
 }) {
-  const parts = [
-    `나는 대학원 수업 "Stochastic Differential Equations"를 듣고 있는 학생이야. 수업은 영어로 진행돼. (강의 자료: ${opts.docName})`,
-  ];
+  const parts = [courseIntro(opts.course, opts.docName, opts.korean)];
   if (opts.hasImage) parts.push('첨부한 이미지는 강의 노트(PDF + 내 필기)에서 내가 표시한 부분이야.');
   if (opts.focusLine) parts.push(`[이해가 안 된 교수님 말]\n"${opts.focusLine}"`);
   parts.push(`[질문]\n${opts.question}`);

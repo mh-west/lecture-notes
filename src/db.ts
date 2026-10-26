@@ -7,6 +7,18 @@ export interface Doc {
   pages?: number[]; // display order: PDF page numbers, negative ids for added blank pages
   createdAt: number;
   updatedAt: number;
+  courseId?: string;
+  terms?: string[]; // technical terms auto-extracted from the PDF text (speech-recognition hints)
+}
+
+/** A folder of PDFs for one class. Its info steers caption recognition, summaries and AI questions. */
+export interface Course {
+  id: string;
+  name: string;
+  subject: string; // free text: what the class covers, level, prerequisites
+  lang: LectureLang;
+  vocab: string[]; // user-entered terms
+  createdAt: number;
 }
 
 export interface Point {
@@ -43,7 +55,10 @@ export interface Recording {
   mimeType: string;
   name?: string; // imported file name
   pageLog?: { t: number; page: number }[]; // page on screen from time t (seconds) onwards
+  lang?: LectureLang;
 }
+
+export type LectureLang = 'en-US' | 'ko-KR';
 
 export interface AudioChunk {
   id?: number;
@@ -92,6 +107,7 @@ export const db = new Dexie('lecture-notes') as Dexie & {
   segments: EntityTable<Segment, 'id'>;
   questions: EntityTable<Question, 'id'>;
   summaries: EntityTable<Summary, 'recId'>;
+  courses: EntityTable<Course, 'id'>;
 };
 
 db.version(1).stores({
@@ -107,8 +123,19 @@ db.version(2).stores({
 db.version(3).stores({
   summaries: 'recId, docId',
 });
+db.version(4).stores({
+  docs: 'id, updatedAt, courseId',
+  courses: 'id, createdAt',
+});
 
 export const uid = () => crypto.randomUUID();
+
+export async function importPdf(file: Blob, name: string, courseId?: string): Promise<string> {
+  const id = uid();
+  const pdf = file.type === 'application/pdf' ? file : new Blob([file], { type: 'application/pdf' });
+  await db.docs.put({ id, name: name.replace(/\.pdf$/i, ''), pdf, createdAt: Date.now(), updatedAt: Date.now(), courseId });
+  return id;
+}
 
 export async function recordingBlob(rec: Recording): Promise<Blob> {
   const chunks = await db.chunks.where('[recId+seq]').between([rec.id, 0], [rec.id, Infinity]).toArray();

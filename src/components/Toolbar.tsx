@@ -6,6 +6,18 @@ import AiSettings from './AiSettings';
 const COLORS = ['#1f2937', '#2563eb', '#dc2626', '#16a34a', '#9333ea', '#f59e0b'];
 const SIZES = [1.4, 2.2, 3.5];
 
+function LangToggle() {
+  const lang = useStore((s) => s.lang);
+  const setLang = useStore((s) => s.setLang);
+  const recording = useStore((s) => Boolean(s.activeRec));
+  return (
+    <div className="seg" title="강의 언어 (자막 인식 언어)">
+      <button className={lang === 'en-US' ? 'active' : ''} disabled={recording} onClick={() => setLang('en-US')}>EN</button>
+      <button className={lang === 'ko-KR' ? 'active' : ''} disabled={recording} onClick={() => setLang('ko-KR')}>한</button>
+    </div>
+  );
+}
+
 function RecButton() {
   const activeRec = useStore((s) => s.activeRec);
   const start = useStore((s) => s.startRecording);
@@ -45,8 +57,8 @@ function RecButton() {
 }
 
 export default function Toolbar({ onBack, title }: { onBack: () => void; title: string }) {
-  const { tool, color, size, zoom, fingerDraw, showOrder, overview, undoStack, redoStack } = useStore();
-  const { setTool, setColor, setSize, setZoom, setFingerDraw, setShowOrder, setOverview, undo, redo } = useStore();
+  const { tool, color, size, zoom, fingerDraw, showOrder, overview, undoStack, redoStack, sideOpen } = useStore();
+  const { setTool, setColor, setSize, setZoom, setFingerDraw, setShowOrder, setOverview, setSideOpen, undo, redo } = useStore();
   const [showSettings, setShowSettings] = useState(false);
   const addBlankPage = useStore((s) => s.addBlankPage);
 
@@ -98,7 +110,11 @@ export default function Toolbar({ onBack, title }: { onBack: () => void; title: 
       </button>
       <div className="grow" />
       <button onClick={() => setShowSettings(true)} title="AI 번역·요약 설정">✨ AI</button>
+      <LangToggle />
       <RecButton />
+      <button className={sideOpen ? 'active' : ''} onClick={() => setSideOpen(!sideOpen)} title="자막·필기순서·AI 질문 패널 열기/닫기">
+        {sideOpen ? '패널 ▸' : '◂ 패널'}
+      </button>
       {showSettings && <AiSettings onClose={() => setShowSettings(false)} />}
     </div>
   );

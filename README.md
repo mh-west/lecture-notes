@@ -22,5 +22,6 @@ npm run build
 - `src/components/PageView.tsx` — PDF 페이지 렌더링, 펜/형광/지우개/⭕ 입력
 - `src/store.ts` — 상태, 녹음·자막 연결, 질문 저장
 - `src/ask.ts` — 선택 영역 캡처, 프롬프트 생성, 공유
-- `src/vocab.ts` — 음성인식에 힌트로 주는 SDE 용어 목록
+- `src/terms.ts` — PDF에서 용어 자동 추출, 과목별 음성인식 힌트 목록 구성
+- `src/vocab.ts` — 폴더 없는 PDF용 기본 SDE 용어 목록
 - `ios/App/App/LectureAudioPlugin.swift` — SpeechAnalyzer(iPadOS 26+) / SFSpeechRecognizer, Translation

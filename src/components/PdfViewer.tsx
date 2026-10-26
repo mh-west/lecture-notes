@@ -5,6 +5,7 @@ import { nativeStrokes, setPinching, startInertia, stopInertia } from '../gestur
 import { addInkImage } from '../inkImages';
 import { isNative, LectureAudio, type InkStrokeEvent } from '../native';
 import { currentPdf, loadPdf, type PDFDoc } from '../pdf';
+import { ensureDocTerms } from '../terms';
 import { useStore } from '../store';
 import Overview from './Overview';
 import PageView from './PageView';
@@ -101,6 +102,7 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
         setSizes(s);
         currentPdf.doc = doc;
         setPdf(doc);
+        ensureDocTerms(rec, doc).catch(() => {}); // background: speech hints for this lecture
       } catch (e) {
         setError(String(e));
       }

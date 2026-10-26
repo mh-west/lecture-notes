@@ -160,6 +160,7 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func start(_ call: CAPPluginCall) {
         if recording { return call.reject("이미 녹음 중이에요") }
         let vocabulary = call.getArray("vocabulary", String.self) ?? []
+        let locale = Locale(identifier: call.getString("locale") ?? "en-US")
 
         Task {
             do {
@@ -191,11 +192,13 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                     self?.notifyListeners("error", data: ["message": msg])
                 }
 
-                let t: LiveTranscriber
-                if #available(iOS 26.0, *) {
-                    t = ModernTranscriber(onResult: onResult, onError: onError)
-                } else {
-                    t = LegacyTranscriber(sampleRate: format.sampleRate, onResult: onResult, onError: onError)
+                // Prefer the iPadOS 26 long-form model; fall back to SFSpeechRecognizer
+                // on older systems or when the model doesn't cover this language.
+                var t: LiveTranscriber = LegacyTranscriber(locale: locale, sampleRate: format.sampleRate, onResult: onResult, onError: onError)
+                var used = "sfspeech"
+                if #available(iOS 26.0, *), let supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale) {
+                    t = ModernTranscriber(locale: supported, onResult: onResult, onError: onError)
+                    used = "speechanalyzer"
                 }
                 // Transcription failing (e.g. model still downloading) must not stop the recording.
                 do {
@@ -216,7 +219,7 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 try engine.start()
                 recording = true
                 await MainActor.run { UIApplication.shared.isIdleTimerDisabled = true } // keep screen on in class
-                call.resolve(["engine": engineName])
+                call.resolve(["engine": used, "locale": locale.identifier])
             } catch {
                 engine.inputNode.removeTap(onBus: 0)
                 call.reject("녹음을 시작할 수 없어요: \(error.localizedDescription)")
@@ -713,13 +716,15 @@ final class ModernTranscriber: LiveTranscriber {
     private var converter: AVAudioConverter?
     private var resultsTask: Task<Void, Never>?
 
-    init(onResult: @escaping (String, Double, Double, Bool) -> Void, onError: @escaping (String) -> Void) {
+    private let locale: Locale
+
+    init(locale: Locale, onResult: @escaping (String, Double, Double, Bool) -> Void, onError: @escaping (String) -> Void) {
+        self.locale = locale
         self.onResult = onResult
         self.onError = onError
     }
 
     func start(vocabulary: [String]) async throws {
-        let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: "en-US")) ?? Locale(identifier: "en-US")
         let transcriber = SpeechTranscriber(locale: locale,
                                             transcriptionOptions: [],
                                             reportingOptions: [.volatileResults],
@@ -794,7 +799,7 @@ final class ModernTranscriber: LiveTranscriber {
 // MARK: - Older iPadOS: SFSpeechRecognizer (on-device when available)
 
 final class LegacyTranscriber: LiveTranscriber {
-    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    private let recognizer: SFSpeechRecognizer?
     private let sampleRate: Double
     private let onResult: (String, Double, Double, Bool) -> Void
     private let onError: (String) -> Void
@@ -806,14 +811,15 @@ final class LegacyTranscriber: LiveTranscriber {
     private var rotateTimer: Timer?
     private var stopping = false
 
-    init(sampleRate: Double, onResult: @escaping (String, Double, Double, Bool) -> Void, onError: @escaping (String) -> Void) {
+    init(locale: Locale, sampleRate: Double, onResult: @escaping (String, Double, Double, Bool) -> Void, onError: @escaping (String) -> Void) {
+        recognizer = SFSpeechRecognizer(locale: locale)
         self.sampleRate = sampleRate
         self.onResult = onResult
         self.onError = onError
     }
 
     func start(vocabulary: [String]) async throws {
-        guard let recognizer, recognizer.isAvailable else { throw PluginError("이 기기에서 영어 음성인식을 쓸 수 없어요") }
+        guard let recognizer, recognizer.isAvailable else { throw PluginError("이 기기에서 이 언어의 음성인식을 쓸 수 없어요") }
         self.vocabulary = vocabulary
         startRequest()
         // A single request grows unboundedly; cut it into ~45s pieces so each becomes a final segment.
