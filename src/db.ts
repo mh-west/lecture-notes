@@ -6,6 +6,18 @@ export interface Doc {
   pdf: Blob;
   createdAt: number;
   updatedAt: number;
+  courseId?: string;
+  terms?: string[]; // technical terms auto-extracted from the PDF text (speech-recognition hints)
+}
+
+/** A folder of PDFs for one class. Its info steers caption recognition, summaries and AI questions. */
+export interface Course {
+  id: string;
+  name: string;
+  subject: string; // free text: what the class covers, level, prerequisites
+  lang: LectureLang;
+  vocab: string[]; // user-entered terms
+  createdAt: number;
 }
 
 export interface Point {
@@ -76,6 +88,7 @@ export const db = new Dexie('lecture-notes') as Dexie & {
   chunks: EntityTable<AudioChunk, 'id'>;
   segments: EntityTable<Segment, 'id'>;
   questions: EntityTable<Question, 'id'>;
+  courses: EntityTable<Course, 'id'>;
 };
 
 db.version(1).stores({
@@ -88,13 +101,17 @@ db.version(2).stores({
   segments: 'id, docId, recId',
   questions: 'id, docId, createdAt',
 });
+db.version(3).stores({
+  docs: 'id, updatedAt, courseId',
+  courses: 'id, createdAt',
+});
 
 export const uid = () => crypto.randomUUID();
 
-export async function importPdf(file: Blob, name: string): Promise<string> {
+export async function importPdf(file: Blob, name: string, courseId?: string): Promise<string> {
   const id = uid();
   const pdf = file.type === 'application/pdf' ? file : new Blob([file], { type: 'application/pdf' });
-  await db.docs.put({ id, name: name.replace(/\.pdf$/i, ''), pdf, createdAt: Date.now(), updatedAt: Date.now() });
+  await db.docs.put({ id, name: name.replace(/\.pdf$/i, ''), pdf, createdAt: Date.now(), updatedAt: Date.now(), courseId });
   return id;
 }
 

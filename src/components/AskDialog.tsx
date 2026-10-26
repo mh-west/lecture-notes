@@ -13,6 +13,7 @@ export default function AskDialog() {
   const saveQuestion = useStore((s) => s.saveQuestion);
   const recordings = useStore((s) => s.recordings);
   const docLang = useStore((s) => s.lang);
+  const course = useStore((s) => s.course);
 
   const [image, setImage] = useState<string | null>(null);
   const [text, setText] = useState('');
@@ -49,6 +50,7 @@ export default function AskDialog() {
     focusLine: ask.segment?.text,
     pageText: text,
     docName,
+    course,
     korean: (recordings.find((r) => r.id === (ask.segment?.recId ?? ask.recId))?.lang ?? docLang) === 'ko-KR',
   });
 

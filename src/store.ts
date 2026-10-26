@@ -1,8 +1,8 @@
 import { create } from 'zustand';
-import { db, recordingBlob, uid, type LectureLang, type Question, type Recording, type Segment, type Stroke } from './db';
+import { db, recordingBlob, uid, type Course, type LectureLang, type Question, type Recording, type Segment, type Stroke } from './db';
 import { isNative, LectureAudio, nativeFileBlob, type TranscriptEvent } from './native';
 import { startWebSpeech, webSpeechAvailable } from './transcribe-web';
-import { VOCABULARY, VOCABULARY_KO } from './vocab';
+import { recognitionVocabulary } from './terms';
 
 function lsGet(k: string) {
   try {
@@ -56,7 +56,8 @@ interface State {
   captionError: string | null;
   sidePanelTab: 'order' | 'transcript' | 'ai';
   sideOpen: boolean;
-  lang: LectureLang; // lecture language, remembered per document
+  lang: LectureLang; // lecture language: per-document override, else the course's language
+  course: Course | null; // folder the open PDF belongs to
 
   // playback / review
   playingRecId: string | null;
@@ -150,6 +151,7 @@ export const useStore = create<State>((set, get) => {
     sidePanelTab: 'transcript',
     sideOpen: lsGet('sideOpen') !== '0',
     lang: 'en-US',
+    course: null,
     playingRecId: null,
     replayT: null,
     flash: null,
@@ -161,7 +163,7 @@ export const useStore = create<State>((set, get) => {
       audio.pause();
       const reset = { undoStack: [], redoStack: [], replayT: null, playingRecId: null, ask: null, partial: '' };
       if (!id) {
-        set({ docId: null, strokes: [], recordings: [], segments: [], questions: [], ...reset });
+        set({ docId: null, strokes: [], recordings: [], segments: [], questions: [], course: null, ...reset });
         return;
       }
       const [strokes, recordings, segments, questions] = await Promise.all([
@@ -170,8 +172,11 @@ export const useStore = create<State>((set, get) => {
         db.segments.where('docId').equals(id).sortBy('start'),
         db.questions.where('docId').equals(id).sortBy('createdAt'),
       ]);
-      const lang: LectureLang = lsGet(`lang:${id}`) === 'ko-KR' ? 'ko-KR' : 'en-US';
-      set({ docId: id, strokes, recordings, segments, questions, lang, ...reset });
+      const doc = await db.docs.get(id);
+      const course = (doc?.courseId && (await db.courses.get(doc.courseId))) || null;
+      const saved = lsGet(`lang:${id}`);
+      const lang: LectureLang = saved === 'ko-KR' || saved === 'en-US' ? saved : (course?.lang ?? 'en-US');
+      set({ docId: id, strokes, recordings, segments, questions, lang, course, ...reset });
     },
 
     // Highlighter with a dark ink colour looks like grey mud; default it to yellow.
@@ -267,7 +272,7 @@ export const useStore = create<State>((set, get) => {
           h2.remove();
         };
         if (!perm.speech) set({ captionError: '음성 인식 권한이 없어 자막 없이 녹음해요 (설정 > 강의노트)' });
-        await LectureAudio.start({ vocabulary: lang === 'ko-KR' ? VOCABULARY_KO : VOCABULARY, locale: lang });
+        await LectureAudio.start({ vocabulary: await recognitionVocabulary(docId, get().course, lang), locale: lang });
       } else {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true },

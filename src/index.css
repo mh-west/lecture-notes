@@ -133,3 +133,20 @@ button.big { min-height: 46px; font-size: 16px; font-weight: 600; }
 .caption-bar .en.partial { opacity: .75; font-style: italic; }
 .caption-bar .ko { font-size: 15px; line-height: 1.4; color: #93c5fd; margin-top: 2px; }
 .caption-bar button { background: transparent; color: #fff; border-color: rgba(255,255,255,.3); min-height: 28px; padding: 2px 8px; }
+
+.summary-row { padding: 8px 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+.summary-row button { width: 100%; }
+
+/* course folders */
+.library header { flex-wrap: wrap; gap: 8px; }
+.course { margin-bottom: 20px; }
+.course-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; }
+.course-title { display: flex; align-items: center; gap: 8px; font-size: 17px; min-width: 0; }
+.course-subject { margin: 0 0 8px 30px; font-size: 13px; white-space: pre-wrap; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
+.doc-list select { max-width: 140px; }
+.empty-row { padding: 8px 12px; }
+.field { display: flex; flex-direction: column; gap: 6px; font-size: 14px; font-weight: 600; }
+.field input { font: inherit; font-weight: 400; font-size: 15px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; -webkit-user-select: text; user-select: text; }
+.field textarea { font-weight: 400; }
+.small-chip { min-height: 28px; padding: 3px 8px; font-size: 12px; }

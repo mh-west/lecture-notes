@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { buildSummaryPrompt, shareQuestion } from '../ask';
+import { db, type Segment } from '../db';
 import { isNative } from '../native';
+import { currentPdf } from '../pdf';
+import { pdfAllText } from '../terms';
 import { fmtTime, groupStrokes } from '../ink';
 import { audio, useStore } from '../store';
 
@@ -112,6 +116,38 @@ function Timeline() {
   );
 }
 
+/** Send the whole lecture transcript (+ course info and PDF text) to Claude / ChatGPT for a summary. */
+function SummaryButton({ recId, lines, korean }: { recId: string; lines: Segment[]; korean: boolean }) {
+  const course = useStore((s) => s.course);
+  const docId = useStore((s) => s.docId);
+  const recordings = useStore((s) => s.recordings);
+  const saveQuestion = useStore((s) => s.saveQuestion);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const run = async () => {
+    setStatus('준비 중…');
+    try {
+      const doc = docId ? await db.docs.get(docId) : undefined;
+      const pdfText = currentPdf.doc ? await pdfAllText(currentPdf.doc, 30) : '';
+      const prompt = buildSummaryPrompt({ captions: lines, docName: doc?.name ?? '', korean, course, pdfText });
+      const n = recordings.findIndex((r) => r.id === recId) + 1;
+      await saveQuestion({ prompt, label: `수업 요약 (녹음 ${n})`, recId, t: 0 });
+      await shareQuestion(prompt);
+      setStatus('공유했어요. 받은 요약은 "AI 질문" 탭에 붙여넣어 둘 수 있어요.');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatus(/cancel/i.test(msg) ? null : msg);
+    }
+  };
+
+  return (
+    <div className="summary-row">
+      <button onClick={run}>📝 수업 요약 → Claude / ChatGPT</button>
+      {status && <div className="muted">{status}</div>}
+    </div>
+  );
+}
+
 function Transcript() {
   const segments = useStore((s) => s.segments);
   const recordings = useStore((s) => s.recordings);
@@ -160,6 +196,7 @@ function Transcript() {
           <input type="checkbox" checked={showKo} onChange={(e) => setShowKo(e.target.checked)} /> 번역
         </label>
       </div>
+      {lines.length > 0 && recId && <SummaryButton recId={recId} lines={lines} korean={korean} />}
       {captionError && <div className="warn">{captionError}</div>}
       {!lines.length && !partial && (
         <div className="hint">

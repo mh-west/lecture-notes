@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { db } from '../db';
 import { groupStrokes } from '../ink';
 import { currentPdf, loadPdf, type PDFDoc } from '../pdf';
+import { ensureDocTerms } from '../terms';
 import { useStore } from '../store';
 import PageView from './PageView';
 
@@ -32,6 +33,7 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
         setSizes(s);
         currentPdf.doc = doc;
         setPdf(doc);
+        ensureDocTerms(rec, doc).catch(() => {}); // background: speech hints for this lecture
       } catch (e) {
         setError(String(e));
       }
