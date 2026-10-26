@@ -144,6 +144,15 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                     if let drag = i as? UIDragInteraction { drag.isEnabled = false }
                     if String(describing: type(of: i)).contains("Scribble") { content.removeInteraction(i) }
                 }
+                // WebKit's double-tap recognizers (zoom, word selection) would swallow the double-tap that
+                // iPadOS uses on a window's top edge to resize it. The app uses neither.
+                for g in content.gestureRecognizers ?? [] {
+                    let name = String(describing: type(of: g))
+                    if (g as? UITapGestureRecognizer)?.numberOfTapsRequired ?? 1 >= 2
+                        || name.contains("MultiTap") || name.contains("TapAndAHalf") {
+                        g.isEnabled = false
+                    }
+                }
             }
             // Touches over the web view reach even native code late, and the page's JavaScript later still.
             // A PencilKit layer over the pages takes the pencil directly; the page saves each finished stroke.

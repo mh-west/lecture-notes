@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import type { MemoryCard } from './db';
 import { isNative, LectureAudio } from './native';
 
 // Language-model engines for refined translation and lecture summaries.
@@ -172,6 +173,48 @@ export async function summarize(transcript: string, slides: string, onProgress?:
     prompt: clip(notes.join('\n\n'), 9000),
   });
   return text;
+}
+
+const CARD_INSTRUCTIONS = `학생이 수학 강의를 듣다가 AI에게 질문하고 답을 받았다. 나중에 이 카드만 보고도 답이 다시 떠오르도록 짧은 기억 카드를 만든다.
+긴 풀이나 증명을 줄여 쓰지 말고, 떠올리는 데 필요한 뼈대만 남긴다.
+정확히 이 형식으로만 쓴다:
+질문: (무엇을 물었는지 한 줄)
+핵심: (결론이나 핵심 아이디어 한 줄)
+뼈대:
+1. (한 단계를 한 줄로: 무엇을 하는지, 어떤 정리·트릭을 쓰는지)
+2. …
+(최대 6단계)
+주의: (헷갈리기 쉬운 점이나 다시 확인할 것, 한두 줄)
+수식은 $...$ LaTeX로 쓴다. 전문 용어는 강의에서 쓰는 대로(필요하면 영어) 쓴다.`;
+
+/** Turns a question and its (often long) AI answer into a short recall card. */
+export async function makeMemoryCard(question: string, answer: string, g?: Glossary): Promise<Omit<MemoryCard, 'madeAt'>> {
+  const s = loadSettings();
+  const big = s.engine === 'claude';
+  const prompt = [...glossaryText(g, big ? 60 : 15), '## 질문', clip(question, big ? 4000 : 1200), '## 받은 답', clip(answer, big ? 16000 : 2500)].join('\n');
+  const text = big
+    ? await claude(CARD_INSTRUCTIONS, prompt, 'low')
+    : (await LectureAudio.llmGenerate({ instructions: CARD_INSTRUCTIONS, prompt })).text;
+  const card = { question: '', gist: '', steps: [] as string[], pitfalls: '' };
+  let inSteps = false;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim().replace(/^\*\*(.+?)\*\*/, '$1');
+    if (!line) continue;
+    const m = line.match(/^(질문|핵심|뼈대|주의)\s*[:：]\s*(.*)$/);
+    if (m) {
+      inSteps = m[1] === '뼈대';
+      if (m[1] === '질문') card.question = m[2];
+      if (m[1] === '핵심') card.gist = m[2];
+      if (m[1] === '주의') card.pitfalls = m[2];
+      if (inSteps && m[2]) card.steps.push(m[2]);
+    } else if (inSteps) {
+      card.steps.push(line.replace(/^(\d+[.)]|[-*•])\s*/, ''));
+    } else if (card.pitfalls) {
+      card.pitfalls += ` ${line}`;
+    }
+  }
+  if (!card.gist && !card.steps.length) throw new Error('기억 카드를 만들지 못했어요. 다시 시도해 주세요');
+  return { ...card, steps: card.steps.slice(0, 8) };
 }
 
 async function claude(system: string, user: string, effort: 'low' | 'medium'): Promise<string> {

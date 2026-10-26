@@ -1,8 +1,8 @@
 import { Directory, Filesystem } from '@capacitor/filesystem';
 import { create } from 'zustand';
-import { db, recordingBlob, uid, type Course, type LectureLang, type Question, type Recording, type Segment, type Stroke, type Summary } from './db';
+import { db, recordingBlob, uid, type Course, type LectureLang, type MemoryCard, type Question, type Recording, type Segment, type Stroke, type Summary } from './db';
 import { fmtTime } from './ink';
-import { engineProblem, loadSettings, summarize, translateLines, type Glossary, type PageContext } from './llm';
+import { engineProblem, loadSettings, makeMemoryCard, summarize, translateLines, type Glossary, type PageContext } from './llm';
 import { currentPdf, pageText } from './pdf';
 import { isNative, LectureAudio, nativeFileBlob, type TranscriptEvent } from './native';
 import { startWebSpeech, webSpeechAvailable } from './transcribe-web';
@@ -121,6 +121,11 @@ interface State {
   openAsk: (target: AskTarget | null) => void;
   saveQuestion: (q: Omit<Question, 'id' | 'docId' | 'createdAt'>) => Promise<void>;
   updateQuestion: (id: string, patch: Partial<Question>) => void;
+  /** Ids of questions whose memory card is being made. */
+  cardBusy: string[];
+  makeCard: (id: string) => Promise<void>;
+  /** Spaced repetition: remembered → longer gap; forgot → back to tomorrow. */
+  reviewCard: (id: string, remembered: boolean) => void;
   deleteQuestion: (id: string) => void;
 }
 
@@ -134,6 +139,8 @@ let wakeLock: WakeLockSentinel | null = null;
 let stopCaptions: (() => void) | null = null;
 let seq = 0;
 let refineChain: Promise<void> = Promise.resolve();
+const DAY = 24 * 60 * 60 * 1000;
+const REVIEW_GAPS = [1, 3, 7, 14, 30]; // days until the next review, by box
 let stopping = false; // a stop is in progress; repeated taps are ignored
 let toolBeforeEraser: Tool = 'pen';
 const inFlight = new Set<string>(); // segment ids being refined
@@ -308,6 +315,7 @@ export const useStore = create<State>((set, get) => {
     flash: null,
     scrollTo: null,
     importing: null,
+    cardBusy: [],
     viewPage: 1,
     pageOrder: [],
     refining: null,
@@ -793,6 +801,44 @@ export const useStore = create<State>((set, get) => {
     updateQuestion: (id, patch) => {
       set((st) => ({ questions: st.questions.map((q) => (q.id === id ? { ...q, ...patch } : q)) }));
       db.questions.update(id, patch);
+      // A newly pasted answer gets its memory card right away (when an AI engine is set up).
+      const q = get().questions.find((x) => x.id === id);
+      if (patch.answer?.trim() && q && !q.card) {
+        engineProblem().then((p) => {
+          if (!p) get().makeCard(id);
+        });
+      }
+    },
+
+    makeCard: async (id) => {
+      const q = get().questions.find((x) => x.id === id);
+      if (!q?.answer?.trim() || get().cardBusy.includes(id)) return;
+      const problem = await engineProblem();
+      if (problem) {
+        alert(problem);
+        return;
+      }
+      set((st) => ({ cardBusy: [...st.cardBusy, id] }));
+      try {
+        const c = await makeMemoryCard(`${q.label}\n\n${q.prompt}`, q.answer, await glossary());
+        const card: MemoryCard = { ...c, madeAt: Date.now() };
+        const review = q.review ?? { box: 0, due: Date.now() + DAY };
+        set((st) => ({ questions: st.questions.map((x) => (x.id === id ? { ...x, card, review } : x)) }));
+        await db.questions.update(id, { card, review });
+      } catch (e) {
+        alert(`기억 카드를 만들지 못했어요: ${errMsg(e)}`);
+      } finally {
+        set((st) => ({ cardBusy: st.cardBusy.filter((x) => x !== id) }));
+      }
+    },
+
+    reviewCard: (id, remembered) => {
+      const q = get().questions.find((x) => x.id === id);
+      if (!q) return;
+      const box = remembered ? Math.min((q.review?.box ?? 0) + 1, REVIEW_GAPS.length - 1) : 0;
+      const review = { box, due: Date.now() + REVIEW_GAPS[box] * DAY };
+      set((st) => ({ questions: st.questions.map((x) => (x.id === id ? { ...x, review } : x)) }));
+      db.questions.update(id, { review });
     },
 
     deleteQuestion: (id) => {

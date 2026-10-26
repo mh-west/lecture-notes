@@ -3,6 +3,7 @@ import { buildSummaryPrompt, shareQuestion } from '../ask';
 import { db, type Segment } from '../db';
 import { loadSettings } from '../llm';
 import Markdown from './Markdown';
+import Questions from './Questions';
 import TermsPanel from './TermsPanel';
 import { isNative } from '../native';
 import { currentPdf } from '../pdf';
@@ -381,54 +382,6 @@ function LectureSummary() {
 
 function audioRecIdMatches(recId: string | null) {
   return Boolean(recId) && useStore.getState().playingRecId === recId;
-}
-
-function BlobImage({ blob, onClick }: { blob: Blob; onClick: () => void }) {
-  const [url, setUrl] = useState<string>();
-  useEffect(() => {
-    const u = URL.createObjectURL(blob);
-    setUrl(u);
-    return () => URL.revokeObjectURL(u);
-  }, [blob]);
-  return url ? <img src={url} alt="" onClick={onClick} /> : null;
-}
-
-function Questions() {
-  const questions = useStore((s) => s.questions);
-  const update = useStore((s) => s.updateQuestion);
-  const remove = useStore((s) => s.deleteQuestion);
-  const focus = useStore((s) => s.focusStrokes);
-  const openAsk = useStore((s) => s.openAsk);
-
-  if (!questions.length) {
-    return <div className="hint">툴바의 ⭕ 질문 도구로 PDF에서 모르는 부분을 동그라미 치거나, 자막 옆 ? 버튼을 누르면 Claude / ChatGPT로 바로 물어볼 수 있어요.</div>;
-  }
-  return (
-    <ol className="questions">
-      {[...questions].reverse().map((q) => (
-        <li key={q.id}>
-          {q.image && <BlobImage blob={q.image} onClick={() => q.page && q.bounds && focus(q.page, q.bounds.minY, [])} />}
-          <div className="q-meta">
-            <b>{q.label}</b>
-            <span className="muted">
-              {q.page ? `p.${q.page}` : '자막'}
-              {q.t != null ? ` · ${fmtTime(q.t)}` : ''} · {new Date(q.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
-            </span>
-          </div>
-          <textarea
-            placeholder="받은 답을 여기에 붙여넣어 두면 복습할 때 같이 볼 수 있어요"
-            defaultValue={q.answer}
-            rows={q.answer ? 5 : 2}
-            onBlur={(e) => e.target.value !== (q.answer ?? '') && update(q.id, { answer: e.target.value })}
-          />
-          <div className="row-wrap">
-            {q.page && q.bounds && <button onClick={() => openAsk({ page: q.page, bounds: q.bounds, recId: q.recId, t: q.t })}>다시 묻기</button>}
-            <button className="danger" onClick={() => confirm('이 질문을 삭제할까요?') && remove(q.id)}>삭제</button>
-          </div>
-        </li>
-      ))}
-    </ol>
-  );
 }
 
 export default function SidePanel() {

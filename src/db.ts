@@ -101,6 +101,17 @@ export interface Question {
   t?: number;
   createdAt: number;
   answer?: string;
+  card?: MemoryCard; // short recall card made from the answer
+  review?: { box: number; due: number }; // spaced repetition: box 0–4, next review time (ms)
+}
+
+/** What it takes to remember an answer later, instead of re-reading (or re-asking) it. */
+export interface MemoryCard {
+  question: string; // what was asked, one line
+  gist: string; // the key idea / conclusion, one line
+  steps: string[]; // solution or proof skeleton, one line per step
+  pitfalls: string; // what was confusing / what to check
+  madeAt: number;
 }
 
 export const db = new Dexie('lecture-notes') as Dexie & {

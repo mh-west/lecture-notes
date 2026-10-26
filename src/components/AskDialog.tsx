@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { buildPrompt, copyImage, copyText, cropPage, dataUrlToBlob, nearbyCaptions, openApp, QUICK_ASKS, shareQuestion } from '../ask';
-import { db } from '../db';
+import { db, type Question } from '../db';
 import { fmtTime } from '../ink';
 import { pageText } from '../pdf';
 import { useStore } from '../store';
+import Markdown from './Markdown';
 
 export default function AskDialog() {
   const ask = useStore((s) => s.ask);
   const segments = useStore((s) => s.segments);
+  const questions = useStore((s) => s.questions);
   const docId = useStore((s) => s.docId);
   const openAsk = useStore((s) => s.openAsk);
   const saveQuestion = useStore((s) => s.saveQuestion);
@@ -42,6 +44,17 @@ export default function AskDialog() {
   }, [ask, segments]);
 
   if (!ask) return null;
+
+  // Questions already asked about this spot: same page with an overlapping selection, or the same
+  // part of the lecture (within a minute). Seeing the old card first saves asking again.
+  const t0 = ask.segment?.start ?? ask.t;
+  const rec0 = ask.segment?.recId ?? ask.recId;
+  const overlap = (a?: Question['bounds'], b?: Question['bounds']) =>
+    Boolean(a && b && a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY);
+  const earlier = questions.filter(
+    (q) => (ask.page != null && q.page === ask.page && overlap(q.bounds, ask.bounds)) ||
+      (!ask.page && rec0 && q.recId === rec0 && q.t != null && t0 != null && Math.abs(q.t - t0) < 60),
+  );
 
   const prompt = buildPrompt({
     question,
@@ -87,6 +100,23 @@ export default function AskDialog() {
           <button onClick={() => openAsk(null)} aria-label="닫기">✕</button>
         </header>
 
+        {earlier.length > 0 && (
+          <div className="earlier">
+            <b>이 부분은 전에 {earlier.length}번 물어봤어요</b>
+            {earlier.map((q) => (
+              <details key={q.id}>
+                <summary>
+                  <Markdown text={`${q.card?.question || q.label} · ${new Date(q.createdAt).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' })}`} />
+                </summary>
+                {q.card ? (
+                  <Markdown text={[`**핵심** ${q.card.gist}`, ...q.card.steps.map((st, i) => `- ${i + 1}. ${st}`), ...(q.card.pitfalls ? [`**주의** ${q.card.pitfalls}`] : [])].join('\n')} />
+                ) : (
+                  <p className="muted">{q.answer ? `${q.answer.slice(0, 300)}${q.answer.length > 300 ? '…' : ''}` : '답을 아직 붙여넣지 않았어요'}</p>
+                )}
+              </details>
+            ))}
+          </div>
+        )}
         {image && <img className="ask-image" src={image} alt="선택한 부분" />}
         {ask.segment && <blockquote className="ask-line">“{ask.segment.text}”</blockquote>}
         <div className="muted">
