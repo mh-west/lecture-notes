@@ -44,6 +44,9 @@ select { font: inherit; font-size: 14px; padding: 6px; border-radius: 8px; borde
 
 .main { flex: 1; display: flex; min-height: 0; }
 .viewer { flex: 1; overflow: auto; padding: 16px; -webkit-overflow-scrolling: touch; }
+/* Grows with a zoomed page so all of it can be scrolled to; centering alone would push its left part
+   off the scrollable area. */
+.pages { width: max-content; min-width: 100%; }
 .page-slot { display: flex; justify-content: center; margin-bottom: 16px; }
 .page { position: relative; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.12); flex-shrink: 0; }
 .layer { position: absolute; inset: 0; }

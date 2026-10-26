@@ -49,6 +49,22 @@ async function placeInk(e: InkStrokeEvent) {
 /** Where the reader is: the page at the top of the viewer and how far into it (0..1), so it survives zoom. */
 type Spot = { page: number; frac: number };
 const spotKey = (docId: string) => `spot:${docId}`;
+
+/** A spot on a page, as fractions of its size, so it can be found again after the zoom changes. */
+type Anchor = { page: string; fx: number; fy: number };
+function pageAt(el: HTMLElement, x: number, y: number): Anchor | null {
+  let best: Anchor | null = null;
+  let bestD = Infinity;
+  for (const p of el.querySelectorAll<HTMLElement>('[data-page] > .page')) {
+    const b = p.getBoundingClientRect();
+    const d = y < b.top ? b.top - y : y > b.bottom ? y - b.bottom : 0;
+    if (d < bestD) {
+      bestD = d;
+      best = { page: p.parentElement!.dataset.page!, fx: (x - b.left) / b.width, fy: (y - b.top) / b.height };
+    }
+  }
+  return best;
+}
 function loadSpot(docId: string): Spot | null {
   try {
     return JSON.parse(localStorage.getItem(spotKey(docId)) ?? 'null');
@@ -163,7 +179,7 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
   // Pinch zoom, shared by web touches and the native layer's forwarded pinch: scale the pages with a
   // CSS transform while pinching (cheap), then apply the real zoom once and keep the spot between the
   // fingers where it was.
-  const pinch = useRef<{ zoom: number; cx: number; cy: number; ox: number; oy: number; s: number } | null>(null);
+  const pinch = useRef<{ zoom: number; cx: number; cy: number; ox: number; oy: number; s: number; anchor: Anchor | null } | null>(null);
   const pinchBegin = (clientX: number, clientY: number) => {
     const el = scrollRef.current;
     if (!el) return;
@@ -176,7 +192,7 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
     // ox, oy: the point under the fingers, in the pages container's own coordinates.
     const ox = el.scrollLeft + cx - (pages?.offsetLeft ?? 0);
     const oy = el.scrollTop + cy - (pages?.offsetTop ?? 0);
-    pinch.current = { zoom: useStore.getState().zoom, cx, cy, ox, oy, s: 1 };
+    pinch.current = { zoom: useStore.getState().zoom, cx, cy, ox, oy, s: 1, anchor: pageAt(el, clientX, clientY) };
     if (pages) pages.style.transformOrigin = `${ox}px ${oy}px`;
   };
   const pinchScale = (scale: number) => {
@@ -195,7 +211,7 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
     const next = +(p.zoom * p.s).toFixed(2);
     if (next === p.zoom) return;
     // Applied in the layout effect below, once the pages have their new size.
-    pinchFocus.current = { ox: p.ox, oy: p.oy, s: next / p.zoom, cx: p.cx, cy: p.cy };
+    pinchFocus.current = { ox: p.ox, oy: p.oy, s: next / p.zoom, cx: p.cx, cy: p.cy, anchor: p.anchor };
     useStore.getState().setZoom(next);
   };
   const handlers = useRef({ pinchBegin, pinchScale, pinchEnd });
@@ -277,7 +293,7 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
 
   // Reopen where the reader left off, and keep that spot when the page width changes (zoom, rotation).
   const spot = useRef<Spot | null>(null);
-  const pinchFocus = useRef<{ ox: number; oy: number; s: number; cx: number; cy: number } | null>(null);
+  const pinchFocus = useRef<{ ox: number; oy: number; s: number; cx: number; cy: number; anchor: Anchor | null } | null>(null);
   useEffect(() => {
     spot.current = loadSpot(docId);
   }, [docId]);
@@ -287,9 +303,19 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
     if (el && f) {
       // After a pinch, keep the point that was between the fingers where it was.
       pinchFocus.current = null;
-      const pages = pagesRef.current;
-      el.scrollLeft = f.ox * f.s + (pages?.offsetLeft ?? 0) - f.cx;
-      el.scrollTop = f.oy * f.s + (pages?.offsetTop ?? 0) - f.cy;
+      // Pages are centered, so the container doesn't grow in proportion: put the same spot of the
+      // same page back under the fingers rather than scaling container coordinates.
+      const page = f.anchor && el.querySelector<HTMLElement>(`[data-page="${f.anchor.page}"] .page`);
+      if (page && f.anchor) {
+        const b = page.getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        el.scrollLeft += b.left + f.anchor.fx * b.width - (r.left + f.cx);
+        el.scrollTop += b.top + f.anchor.fy * b.height - (r.top + f.cy);
+      } else {
+        const pages = pagesRef.current;
+        el.scrollLeft = f.ox * f.s + (pages?.offsetLeft ?? 0) - f.cx;
+        el.scrollTop = f.oy * f.s + (pages?.offsetTop ?? 0) - f.cy;
+      }
       return;
     }
     const s = spot.current;
