@@ -136,7 +136,12 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
               aria-expanded={!collapsed.has(course?.id ?? 'unfiled')}
               onClick={() => toggle(course?.id ?? 'unfiled')}
             >
-              <span className="chevron">{collapsed.has(course?.id ?? 'unfiled') ? '▸' : '▾'}</span>
+              <span className={`fold ${collapsed.has(course?.id ?? 'unfiled') ? 'shut' : ''}`} aria-hidden>
+                <svg viewBox="0 0 24 24" width="26" height="26">
+                  <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <small>{collapsed.has(course?.id ?? 'unfiled') ? '펼치기' : '접기'}</small>
+              </span>
               <span className="folder">📁</span>
               <b>{course?.name ?? '메인'}</b>
               {course && <span className="badge">{course.lang === 'ko-KR' ? '한국어' : 'English'}</span>}
