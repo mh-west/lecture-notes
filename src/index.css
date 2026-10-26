@@ -218,10 +218,8 @@ button.big { min-height: 46px; font-size: 16px; font-weight: 600; }
 .chip.used { background: var(--bg); }
 .chip button { min-height: 0; border: 0; background: none; padding: 0 4px; font-size: 11px; color: var(--muted); }
 .terms .text-input { flex: 1; min-width: 0; }
-button.course-title { background: none; border: 0; padding: 6px 12px 6px 0; min-height: 60px; color: var(--text); text-align: left; border-radius: 10px; }
+button.course-title { background: none; border: 0; padding: 6px 12px 6px 4px; min-height: 52px; color: var(--text); text-align: left; border-radius: 10px; }
 button.course-title:active { background: var(--accent-soft); }
-.course-title .fold { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; width: 56px; height: 52px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); color: var(--accent); }
-.course-title .fold svg { transition: transform .15s; }
-.course-title .fold.shut svg { transform: rotate(-90deg); }
-.course-title .fold small { font-size: 11px; line-height: 1; color: var(--muted); margin-top: -2px; }
+.course-title .fold { flex-shrink: 0; color: var(--text); transition: transform .15s; }
+.course-title .fold.shut { transform: rotate(-90deg); }
 button.course-title b { font-size: 19px; }
