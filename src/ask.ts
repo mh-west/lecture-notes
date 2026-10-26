@@ -14,7 +14,7 @@ export const QUICK_ASKS = [
 ] as const;
 
 /** Crop a page region (PDF + ink) to a PNG data URL. */
-export function cropPage(page: number, b: Bounds, pad = 12): string | null {
+export function cropPage(page: number, b: Bounds, pad = 0): string | null { // the rectangle exactly as selected
   const el = document.querySelector<HTMLElement>(`[data-page="${page}"] .page`);
   if (!el) return null;
   const [pdfCanvas, inkCanvas] = Array.from(el.querySelectorAll('canvas'));
