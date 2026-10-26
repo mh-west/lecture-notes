@@ -6,8 +6,11 @@ export const nativeStrokes = new Set<string>();
 
 /** True while two fingers are pinching; one-finger panning pauses meanwhile. */
 export let pinching = false;
+/** Counts pinches, so a one-finger scroll can tell that a pinch happened since it started. */
+export let pinchCount = 0;
 export const setPinching = (v: boolean) => {
   pinching = v;
+  if (v) pinchCount++;
 };
 
 // Fling after a finger scroll: keep moving and slow down, like native scrolling.

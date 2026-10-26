@@ -5,7 +5,7 @@ import type { PDFDoc } from '../pdf';
 import { inkVersion, onInkImages, paintStroke } from '../inkImages';
 import { isNative, LectureAudio } from '../native';
 import { nativeStrokes } from '../gestures';
-import { pinching, startInertia, stopInertia } from '../gestures';
+import { pinchCount, pinching, startInertia, stopInertia } from '../gestures';
 import { useStore } from '../store';
 
 const ERASER_R = 10; // eraser radius in PDF units
@@ -254,7 +254,7 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
     stopInertia();
     if (mode === 'tap') {
       const v = liveCanvas.current!.closest<HTMLElement>('.viewer')!;
-      pan.current = { v, x: e.clientX, y: e.clientY, left: v.scrollLeft, top: v.scrollTop, t: e.timeStamp, vx: 0, vy: 0 };
+      pan.current = { v, x: e.clientX, y: e.clientY, left: v.scrollLeft, top: v.scrollTop, t: e.timeStamp, vx: 0, vy: 0, pinchAt: pinchCount };
     }
     rect.current = liveCanvas.current!.getBoundingClientRect();
     const p = toPoint(e);
@@ -281,11 +281,14 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
 
   // Finger scrolling. The page canvas has touch-action: none so the pencil isn't held back while the
   // browser decides whether a touch is a scroll; fingers therefore scroll the viewer by hand.
-  const pan = useRef<{ v: HTMLElement; x: number; y: number; left: number; top: number; t: number; vx: number; vy: number } | null>(null);
+  const pan = useRef<{ v: HTMLElement; x: number; y: number; left: number; top: number; t: number; vx: number; vy: number; pinchAt: number; pinched?: boolean } | null>(null);
   const panMove = (d: NonNullable<typeof drawing.current>, e: React.PointerEvent) => {
     const p = pan.current;
     if (!p) return;
-    if (pinching) {
+    // Once two fingers pinched, the finger left on screen must not resume this scroll: its start
+    // position is from before the zoom, so it would yank the page back (and fling it).
+    if (pinching || pinchCount !== p.pinchAt) p.pinched = true;
+    if (p.pinched) {
       d.moved = true; // a pinch is never a tap
       return;
     }
@@ -339,7 +342,7 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
         st.openAsk({ page: pageNum, bounds, recId, t });
       }
     }
-    if (d.mode === 'tap' && d.moved && pan.current) {
+    if (d.mode === 'tap' && d.moved && pan.current && !pan.current.pinched && !pinching && pinchCount === pan.current.pinchAt) {
       const { v, vx, vy } = pan.current;
       if (e.timeStamp - pan.current.t < 80) startInertia(v, vx, vy);
     }

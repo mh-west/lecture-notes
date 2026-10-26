@@ -515,6 +515,8 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
     private var known = 0 // strokes on the canvas we have already reported
     private var pendingRemovals = 0
     private var pencilDown = false
+    private var pinching = false
+    private var panSawPinch = false // the current one-finger pan turned into a pinch at some point
     private var restWork: DispatchWorkItem?
     private var highlighter = false
     private let pan = UIPanGestureRecognizer()
@@ -639,13 +641,18 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
     }
 
     @objc private func onPan(_ g: UIPanGestureRecognizer) {
-        if pencilDown || pinch.state == .changed { return }
+        if g.state == .began { panSawPinch = false }
+        // A second finger makes it a pinch: this pan must neither scroll nor fling afterwards.
+        if pinching || g.numberOfTouches > 1 { panSawPinch = true }
+        if pencilDown || panSawPinch { return }
         let t = g.translation(in: container), v = g.velocity(in: container)
         emit("fingerPan", ["state": phase(g.state), "dx": Double(t.x), "dy": Double(t.y), "vx": Double(v.x), "vy": Double(v.y)])
     }
 
     @objc private func onPinch(_ g: UIPinchGestureRecognizer) {
         if pencilDown { return }
+        pinching = g.state == .began || g.state == .changed
+        if pinching { panSawPinch = true }
         var data: [String: Any] = webPoint(g)
         data["state"] = phase(g.state)
         data["scale"] = Double(g.scale)

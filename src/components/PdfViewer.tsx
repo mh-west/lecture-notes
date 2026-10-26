@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { db, uid, type Stroke } from '../db';
 import { groupStrokes } from '../ink';
-import { nativeStrokes, setPinching, startInertia, stopInertia } from '../gestures';
+import { nativeStrokes, pinching, setPinching, startInertia, stopInertia } from '../gestures';
 import { addInkImage } from '../inkImages';
 import { isNative, LectureAudio, type InkStrokeEvent } from '../native';
 import { currentPdf, loadPdf, type PDFDoc } from '../pdf';
@@ -190,6 +190,7 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
     if (!p) return;
     pinch.current = null;
     setPinching(false);
+    stopInertia(); // nothing may keep scrolling once the zoom lands
     if (pagesRef.current) pagesRef.current.style.transform = '';
     const next = +(p.zoom * p.s).toFixed(2);
     if (next === p.zoom) return;
@@ -245,6 +246,7 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
         placeInk(e).finally(() => {}); // acknowledges itself once drawn (or right away if off the pages)
       }),
       LectureAudio.addListener('fingerPan', (e) => {
+        if (pinching) return; // a pinch is in charge of the view
         if (e.state === 'began') {
           stopInertia();
           panStart = { left: el.scrollLeft, top: el.scrollTop };
