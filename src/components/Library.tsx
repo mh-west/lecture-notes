@@ -1,6 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useRef } from 'react';
-import { db, uid } from '../db';
+import { db, importPdf } from '../db';
 
 export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
   const docs = useLiveQuery(() => db.docs.orderBy('updatedAt').reverse().toArray(), []);
@@ -10,9 +10,7 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
     if (!files?.length) return;
     let last = '';
     for (const f of Array.from(files)) {
-      const id = uid();
-      await db.docs.put({ id, name: f.name.replace(/\.pdf$/i, ''), pdf: f, createdAt: Date.now(), updatedAt: Date.now() });
-      last = id;
+      last = await importPdf(f, f.name);
     }
     if (files.length === 1) onOpen(last);
   };

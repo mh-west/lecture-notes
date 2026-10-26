@@ -1,8 +1,23 @@
 import { create } from 'zustand';
-import { db, recordingBlob, uid, type Question, type Recording, type Segment, type Stroke } from './db';
+import { db, recordingBlob, uid, type LectureLang, type Question, type Recording, type Segment, type Stroke } from './db';
 import { isNative, LectureAudio, nativeFileBlob, type TranscriptEvent } from './native';
 import { startWebSpeech, webSpeechAvailable } from './transcribe-web';
-import { VOCABULARY } from './vocab';
+import { VOCABULARY, VOCABULARY_KO } from './vocab';
+
+function lsGet(k: string) {
+  try {
+    return localStorage.getItem(k);
+  } catch {
+    return null;
+  }
+}
+function lsSet(k: string, v: string) {
+  try {
+    localStorage.setItem(k, v);
+  } catch {
+    /* private mode */
+  }
+}
 
 export type Tool = 'pen' | 'highlighter' | 'eraser' | 'lasso';
 
@@ -40,6 +55,8 @@ interface State {
   partial: string; // caption text not yet finalised
   captionError: string | null;
   sidePanelTab: 'order' | 'transcript' | 'ai';
+  sideOpen: boolean;
+  lang: LectureLang; // lecture language, remembered per document
 
   // playback / review
   playingRecId: string | null;
@@ -57,6 +74,8 @@ interface State {
   setFingerDraw: (v: boolean) => void;
   setShowOrder: (v: boolean) => void;
   setSidePanelTab: (t: State['sidePanelTab']) => void;
+  setSideOpen: (v: boolean) => void;
+  setLang: (l: LectureLang) => void;
   addStroke: (s: Omit<Stroke, 'id' | 'docId' | 'createdAt' | 'recId' | 't'>) => void;
   deleteStrokes: (ids: string[]) => void;
   undo: () => void;
@@ -107,7 +126,7 @@ export const useStore = create<State>((set, get) => {
     const seg: Segment = { id: uid(), docId: rec.docId, recId: rec.id, start: e.start, end: e.end, text: e.text };
     set((st) => ({ segments: [...st.segments, seg], partial: '' }));
     db.segments.put(seg);
-    if (isNative) get().translateSegment(seg.id);
+    if (isNative && rec.lang !== 'ko-KR') get().translateSegment(seg.id);
   };
 
   return {
@@ -129,6 +148,8 @@ export const useStore = create<State>((set, get) => {
     partial: '',
     captionError: null,
     sidePanelTab: 'transcript',
+    sideOpen: lsGet('sideOpen') !== '0',
+    lang: 'en-US',
     playingRecId: null,
     replayT: null,
     flash: null,
@@ -149,7 +170,8 @@ export const useStore = create<State>((set, get) => {
         db.segments.where('docId').equals(id).sortBy('start'),
         db.questions.where('docId').equals(id).sortBy('createdAt'),
       ]);
-      set({ docId: id, strokes, recordings, segments, questions, ...reset });
+      const lang: LectureLang = lsGet(`lang:${id}`) === 'ko-KR' ? 'ko-KR' : 'en-US';
+      set({ docId: id, strokes, recordings, segments, questions, lang, ...reset });
     },
 
     // Highlighter with a dark ink colour looks like grey mud; default it to yellow.
@@ -161,6 +183,15 @@ export const useStore = create<State>((set, get) => {
     setFingerDraw: (fingerDraw) => set({ fingerDraw }),
     setShowOrder: (showOrder) => set({ showOrder }),
     setSidePanelTab: (sidePanelTab) => set({ sidePanelTab }),
+    setSideOpen: (sideOpen) => {
+      lsSet('sideOpen', sideOpen ? '1' : '0');
+      set({ sideOpen });
+    },
+    setLang: (lang) => {
+      const { docId } = get();
+      if (docId) lsSet(`lang:${docId}`, lang);
+      set({ lang });
+    },
 
     recTime: () => {
       const { activeRec, recStartPerf } = get();
@@ -221,7 +252,8 @@ export const useStore = create<State>((set, get) => {
       const { docId } = get();
       if (!docId || get().activeRec) return;
       audio.pause();
-      const rec: Recording = { id: uid(), docId, startedAt: Date.now(), mimeType: 'audio/mp4' };
+      const lang = get().lang;
+      const rec: Recording = { id: uid(), docId, startedAt: Date.now(), mimeType: 'audio/mp4', lang };
       set({ captionError: null, partial: '' });
 
       if (isNative) {
@@ -235,7 +267,7 @@ export const useStore = create<State>((set, get) => {
           h2.remove();
         };
         if (!perm.speech) set({ captionError: '음성 인식 권한이 없어 자막 없이 녹음해요 (설정 > 강의노트)' });
-        await LectureAudio.start({ vocabulary: VOCABULARY });
+        await LectureAudio.start({ vocabulary: lang === 'ko-KR' ? VOCABULARY_KO : VOCABULARY, locale: lang });
       } else {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true },
@@ -250,7 +282,7 @@ export const useStore = create<State>((set, get) => {
         // Flush every 5s so a crash or closed tab loses at most a few seconds of audio.
         recorder.start(5000);
         if (webSpeechAvailable()) {
-          stopCaptions = startWebSpeech(() => get().recTime() ?? 0, onCaption(rec), (m) => set({ captionError: `자막 오류: ${m}` }));
+          stopCaptions = startWebSpeech(lang, () => get().recTime() ?? 0, onCaption(rec), (m) => set({ captionError: `자막 오류: ${m}` }));
         } else {
           set({ captionError: '이 브라우저는 자막을 지원하지 않아요. iPad 앱에서는 기기 내 자막이 동작해요.' });
         }

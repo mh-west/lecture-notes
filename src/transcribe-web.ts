@@ -13,7 +13,7 @@ export function webSpeechAvailable() {
   return Boolean(w.SpeechRecognition || w.webkitSpeechRecognition);
 }
 
-export function startWebSpeech(now: () => number, onEvent: (e: TranscriptEvent) => void, onError: (m: string) => void) {
+export function startWebSpeech(lang: string, now: () => number, onEvent: (e: TranscriptEvent) => void, onError: (m: string) => void) {
   const w = window as unknown as Record<string, new () => SR>;
   const Ctor = w.SpeechRecognition || w.webkitSpeechRecognition;
   if (!Ctor) return () => {};
@@ -22,7 +22,7 @@ export function startWebSpeech(now: () => number, onEvent: (e: TranscriptEvent) 
   let segStart: number | null = null;
   const boot = () => {
     rec = new Ctor();
-    rec.lang = 'en-US';
+    rec.lang = lang;
     rec.continuous = true;
     rec.interimResults = true;
     rec.onresult = (e) => {

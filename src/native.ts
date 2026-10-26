@@ -9,7 +9,7 @@ export interface TranscriptEvent {
 
 interface LectureAudioPlugin {
   prepare(): Promise<{ mic: boolean; speech: boolean; engine: 'speechanalyzer' | 'sfspeech' }>;
-  start(opts: { vocabulary: string[] }): Promise<{ engine: string }>;
+  start(opts: { vocabulary: string[]; locale: string }): Promise<{ engine: string; locale: string }>;
   stop(): Promise<{ uri: string; path: string }>;
   translate(opts: { text: string }): Promise<{ text: string }>;
   addListener(event: 'transcript', fn: (e: TranscriptEvent) => void): Promise<PluginListenerHandle>;

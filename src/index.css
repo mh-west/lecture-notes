@@ -116,3 +116,20 @@ textarea { font: inherit; font-size: 14px; width: 100%; border: 1px solid var(--
 .prompt-preview { white-space: pre-wrap; font-size: 12px; background: var(--bg); padding: 10px; border-radius: 8px; max-height: 200px; overflow-y: auto; margin: 0; -webkit-user-select: text; user-select: text; }
 button.big { min-height: 46px; font-size: 16px; font-weight: 600; }
 .status { font-size: 13px; color: #047857; }
+
+.seg { display: flex; flex-shrink: 0; }
+.seg button { border-radius: 0; min-width: 40px; }
+.seg button:first-child { border-radius: 8px 0 0 8px; }
+.seg button:last-child { border-radius: 0 8px 8px 0; border-left: 0; }
+
+.main { position: relative; }
+.caption-bar {
+  position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); width: min(720px, calc(100% - 32px));
+  display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: 12px;
+  background: rgba(17, 24, 39, .82); color: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.25); z-index: 5;
+}
+.caption-bar .caption-text { flex: 1; min-width: 0; cursor: pointer; }
+.caption-bar .en { font-size: 16px; line-height: 1.4; }
+.caption-bar .en.partial { opacity: .75; font-style: italic; }
+.caption-bar .ko { font-size: 15px; line-height: 1.4; color: #93c5fd; margin-top: 2px; }
+.caption-bar button { background: transparent; color: #fff; border-color: rgba(255,255,255,.3); min-height: 28px; padding: 2px 8px; }

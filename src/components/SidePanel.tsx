@@ -130,6 +130,7 @@ function Transcript() {
 
   const recId = activeRec?.id ?? chosen ?? playingRecId ?? recordings.at(-1)?.id ?? null;
   const lines = useMemo(() => segments.filter((s) => s.recId === recId), [segments, recId]);
+  const korean = recordings.find((r) => r.id === recId)?.lang === 'ko-KR';
 
   useEffect(() => {
     const on = () => setNow(audioRecIdMatches(recId) ? audio.currentTime : -1);
@@ -181,7 +182,7 @@ function Transcript() {
             </button>
             <div className="line-body">
               <div className="en">{l.text}</div>
-              {showKo && (l.ko ? <div className="ko">{l.ko}</div> : isNative && <button className="link small" onClick={() => translateSegment(l.id)}>번역</button>)}
+              {showKo && !korean && (l.ko ? <div className="ko">{l.ko}</div> : isNative && <button className="link small" onClick={() => translateSegment(l.id)}>번역</button>)}
             </div>
             <button className="ask-btn" title="이 문장 AI에게 묻기" onClick={() => openAsk({ segment: l })}>?</button>
           </li>

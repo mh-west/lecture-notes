@@ -50,9 +50,10 @@ export function buildPrompt(opts: {
   focusLine?: string;
   pageText?: string;
   docName: string;
+  korean?: boolean;
 }) {
   const parts = [
-    `나는 대학원 수업 "Stochastic Differential Equations"를 듣고 있는 학생이야. 수업은 영어로 진행돼. (강의 자료: ${opts.docName})`,
+    `나는 대학원 수업 "Stochastic Differential Equations"를 듣고 있는 학생이야. 수업은 ${opts.korean ? '한국어' : '영어'}로 진행돼. (강의 자료: ${opts.docName})`,
   ];
   if (opts.hasImage) parts.push('첨부한 이미지는 강의 노트(PDF + 내 필기)에서 내가 표시한 부분이야.');
   if (opts.focusLine) parts.push(`[이해가 안 된 교수님 말]\n"${opts.focusLine}"`);

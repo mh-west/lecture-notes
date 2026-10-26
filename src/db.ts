@@ -33,7 +33,10 @@ export interface Recording {
   startedAt: number;
   endedAt?: number;
   mimeType: string;
+  lang?: LectureLang;
 }
+
+export type LectureLang = 'en-US' | 'ko-KR';
 
 export interface AudioChunk {
   id?: number;
@@ -87,6 +90,13 @@ db.version(2).stores({
 });
 
 export const uid = () => crypto.randomUUID();
+
+export async function importPdf(file: Blob, name: string): Promise<string> {
+  const id = uid();
+  const pdf = file.type === 'application/pdf' ? file : new Blob([file], { type: 'application/pdf' });
+  await db.docs.put({ id, name: name.replace(/\.pdf$/i, ''), pdf, createdAt: Date.now(), updatedAt: Date.now() });
+  return id;
+}
 
 export async function recordingBlob(rec: Recording): Promise<Blob> {
   const chunks = await db.chunks.where('[recId+seq]').between([rec.id, 0], [rec.id, Infinity]).toArray();
