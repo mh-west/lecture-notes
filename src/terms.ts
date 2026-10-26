@@ -9,6 +9,10 @@ const STOP = new Set(
    particular arbitrary positive negative zero finite infinite sets set condition conditions property properties similarly clearly
    obviously namely respectively analogously otherwise whereas thereby assume assumed suppose supposed obtain obtained yields`.split(/\s+/),
 );
+ // Everyday Korean words and verb forms that show up in any lecture text.
+const KO_STOP = new Set(
+  `따라서 그러므로 그러나 하지만 그리고 또한 이때 이내 이상 이하 미만 초과 경우 때문 대한 대해 위한 위해 같은 같이 다음 다른 모든 각각 여기 이것 그것 우리 있는 있다 없는 없다 되기 되는 된다 하는 하여 하여라 하고 하면 일때 일 때 가정한 가정 구하라 구하여라 구하시오 보여라 보이시오 풀이 예제 문제 정리 정의 참고 증명 단원 결과 방법 내용 다음과 같다 이용 사용`.split(/\s+/),
+);
 const KO_PARTICLE = /(은|는|이|가|을|를|의|에|에서|으로|로|와|과|도|만|에게|까지|부터|이다|입니다|하는|한다|된다|하고)$/;
 
 /** Rank recurring technical-looking words/phrases in lecture text. */
@@ -28,7 +32,8 @@ export function extractTerms(text: string, max = 60): string[] {
   }
   for (const raw of text.match(/[가-힣]{2,}/g) ?? []) {
     const w = raw.replace(KO_PARTICLE, '');
-    if (w.length >= 2) bump(w, 1);
+    // Skip everyday words and verb endings (…하여라, …시오, …한다).
+    if (w.length >= 2 && !KO_STOP.has(w) && !KO_STOP.has(raw) && !/(하여라|하시오|시오|하라|한다|된다|이다|었다|였다)$/.test(raw)) bump(w, 1);
   }
   return [...score.entries()]
     .filter(([k, v]) => v >= (k.includes(' ') ? 3 : 2.5))
@@ -47,7 +52,7 @@ export async function pdfAllText(pdf: PDFDoc, maxPages = 500): Promise<string> {
 }
 
 /** Extract and cache a document's terms the first time it's opened. */
-const TERMS_V = 4; // bump when extraction changes, so saved lists are redone (4: scanned PDFs are read with OCR)
+const TERMS_V = 5; // bump when extraction changes, so saved lists are redone (5: skip everyday Korean words)
 
 /**
  * A scanned PDF has (almost) no text layer. On the iPad its pages are read with Vision text
