@@ -263,6 +263,9 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
         const target = document.elementFromPoint(e.x, e.y);
         if (!target) return;
         const opts = { bubbles: true, pointerId: 9999, pointerType: 'touch', clientX: e.x, clientY: e.y, isPrimary: true };
+        // Buttons floating over the pages (reopen panel, caption bar) get a real click.
+        const control = target.closest<HTMLElement>('button, a, select, input, [role="button"], .caption-text');
+        if (control) return control.click();
         target.dispatchEvent(new PointerEvent('pointerdown', opts));
         target.dispatchEvent(new PointerEvent('pointerup', opts));
       }),

@@ -69,6 +69,11 @@ export default function App() {
       <div className="main">
         <PdfViewer key={docId} docId={docId} onMissing={() => setDocId(null)} />
         {sideOpen ? <SidePanel /> : <CaptionBar />}
+        {!sideOpen && (
+          <button className="panel-open" onClick={() => useStore.getState().setSideOpen(true)} title="패널 열기">
+            ◂ 패널
+          </button>
+        )}
       </div>
       <AskDialog />
     </div>

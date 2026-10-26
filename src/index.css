@@ -223,3 +223,5 @@ button.course-title:active { background: var(--accent-soft); }
 .course-title .fold { flex-shrink: 0; color: var(--text); transition: transform .15s; }
 .course-title .fold.shut { transform: rotate(-90deg); }
 button.course-title b { font-size: 19px; }
+.tabs .panel-close { flex: 0 0 auto; width: 36px; padding: 6px 0; font-size: 15px; color: var(--muted); }
+.panel-open { position: absolute; top: 12px; right: 12px; z-index: 4; box-shadow: 0 2px 8px rgba(0,0,0,.12); }

@@ -432,6 +432,7 @@ function Questions() {
 }
 
 export default function SidePanel() {
+  const setSideOpen = useStore((s) => s.setSideOpen);
   const tab = useStore((s) => s.sidePanelTab);
   const setTab = useStore((s) => s.setSidePanelTab);
   const qCount = useStore((s) => s.questions.length);
@@ -443,6 +444,7 @@ export default function SidePanel() {
         <button className={tab === 'order' ? 'active' : ''} onClick={() => setTab('order')}>필기 순서</button>
         <button className={tab === 'ai' ? 'active' : ''} onClick={() => setTab('ai')}>AI 질문{qCount ? ` ${qCount}` : ''}</button>
         <button className={tab === 'terms' ? 'active' : ''} onClick={() => setTab('terms')}>용어</button>
+        <button className="panel-close" onClick={() => setSideOpen(false)} title="패널 닫기" aria-label="패널 닫기">▸</button>
       </div>
       {tab === 'transcript' && <Transcript />}
       {tab === 'summary' && <LectureSummary />}

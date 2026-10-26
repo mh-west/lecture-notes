@@ -70,8 +70,8 @@ function RecButton() {
 }
 
 export default function Toolbar({ onBack, title }: { onBack: () => void; title: string }) {
-  const { tool, color, size, zoom, fingerDraw, showOrder, overview, undoStack, redoStack, sideOpen } = useStore();
-  const { setTool, setColor, setSize, setZoom, setFingerDraw, setShowOrder, setOverview, setSideOpen, undo, redo } = useStore();
+  const { tool, color, size, zoom, fingerDraw, showOrder, overview, undoStack, redoStack } = useStore();
+  const { setTool, setColor, setSize, setZoom, setFingerDraw, setShowOrder, setOverview, undo, redo } = useStore();
   const [showSettings, setShowSettings] = useState(false);
   const addBlankPage = useStore((s) => s.addBlankPage);
 
@@ -125,9 +125,6 @@ export default function Toolbar({ onBack, title }: { onBack: () => void; title: 
       <button onClick={() => setShowSettings(true)} title="AI 번역·요약 설정">✨ AI</button>
       <LangToggle />
       <RecButton />
-      <button className={sideOpen ? 'active' : ''} onClick={() => setSideOpen(!sideOpen)} title="자막·필기순서·AI 질문 패널 열기/닫기">
-        {sideOpen ? '패널 ▸' : '◂ 패널'}
-      </button>
       {showSettings && <AiSettings onClose={() => setShowSettings(false)} />}
     </div>
   );
