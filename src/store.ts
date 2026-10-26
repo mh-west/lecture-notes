@@ -119,7 +119,8 @@ interface State {
   translateAll: (recId: string) => Promise<void>;
   translatingAll: boolean;
   openAsk: (target: AskTarget | null) => void;
-  saveQuestion: (q: Omit<Question, 'id' | 'docId' | 'createdAt'>) => Promise<void>;
+  /** Returns the new question's id. */
+  saveQuestion: (q: Omit<Question, 'id' | 'docId' | 'createdAt'>) => Promise<string | undefined>;
   updateQuestion: (id: string, patch: Partial<Question>) => void;
   /** Ids of questions whose memory card is being made. */
   cardBusy: string[];
@@ -796,6 +797,7 @@ export const useStore = create<State>((set, get) => {
       const question: Question = { ...q, id: uid(), docId, createdAt: Date.now() };
       set((st) => ({ questions: [...st.questions, question] }));
       await db.questions.put(question);
+      return question.id;
     },
 
     updateQuestion: (id, patch) => {

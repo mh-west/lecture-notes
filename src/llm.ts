@@ -175,6 +175,22 @@ export async function summarize(transcript: string, slides: string, onProgress?:
   return text;
 }
 
+const TUTOR_INSTRUCTIONS = `You are a patient tutor for a university mathematics student who is studying from lecture slides and the professor's words. Answer in Korean. Explain clearly and completely, step by step; give the reasoning, not just the result. Keep technical terms as the course uses them (English where Korean students normally use English). Write every formula in LaTeX: inline $...$, displayed $$...$$ on its own line.`;
+
+/**
+ * Asks the chosen engine the question built for the Claude / ChatGPT apps, so the answer lands in this app.
+ * Claude also sees the selected part of the page (`imageDataUrl`); the on-device model reads text only.
+ */
+export async function askAI(prompt: string, imageDataUrl?: string): Promise<string> {
+  const s = loadSettings();
+  if (s.engine === 'apple') {
+    const { text } = await LectureAudio.llmGenerate({ instructions: TUTOR_INSTRUCTIONS, prompt: clip(prompt, 3200) });
+    return text;
+  }
+  const image = imageDataUrl?.match(/^data:(image\/(?:png|jpeg));base64,(.+)$/);
+  return claude(TUTOR_INSTRUCTIONS, prompt, 'medium', image ? { mediaType: image[1] as 'image/png' | 'image/jpeg', data: image[2] } : undefined);
+}
+
 const CARD_INSTRUCTIONS = `학생이 수학 강의를 듣다가 AI에게 질문하고 답을 받았다. 나중에 이 카드만 보고도 답이 다시 떠오르도록 짧은 기억 카드를 만든다.
 긴 풀이나 증명을 줄여 쓰지 말고, 떠올리는 데 필요한 뼈대만 남긴다.
 정확히 이 형식으로만 쓴다:
@@ -217,7 +233,12 @@ export async function makeMemoryCard(question: string, answer: string, g?: Gloss
   return { ...card, steps: card.steps.slice(0, 8) };
 }
 
-async function claude(system: string, user: string, effort: 'low' | 'medium'): Promise<string> {
+async function claude(
+  system: string,
+  user: string,
+  effort: 'low' | 'medium',
+  image?: { mediaType: 'image/png' | 'image/jpeg'; data: string },
+): Promise<string> {
   const s = loadSettings();
   const client = new Anthropic({ apiKey: s.claudeKey.trim(), dangerouslyAllowBrowser: true });
   // Server-side fallback re-runs a declined request on another model; Haiku has none.
@@ -228,7 +249,17 @@ async function claude(system: string, user: string, effort: 'low' | 'medium'): P
       max_tokens: 16000,
       system,
       output_config: { effort },
-      messages: [{ role: 'user', content: user }],
+      messages: [
+        {
+          role: 'user',
+          content: image
+            ? [
+                { type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } },
+                { type: 'text', text: user },
+              ]
+            : user,
+        },
+      ],
       ...fallback,
     });
     if (res.stop_reason === 'refusal') throw new Error('Claude가 이 요청을 거절했어요');

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildPrompt, copyImage, copyText, cropPage, dataUrlToBlob, nearbyCaptions, openApp, QUICK_ASKS, shareQuestion } from '../ask';
 import { db, type Question } from '../db';
+import { askAI, engineProblem } from '../llm';
 import { fmtTime } from '../ink';
 import { pageText } from '../pdf';
 import { useStore } from '../store';
@@ -13,6 +14,10 @@ export default function AskDialog() {
   const docId = useStore((s) => s.docId);
   const openAsk = useStore((s) => s.openAsk);
   const saveQuestion = useStore((s) => s.saveQuestion);
+  const updateQuestion = useStore((s) => s.updateQuestion);
+  const savedId = useRef<string | undefined>(undefined);
+  const [answer, setAnswer] = useState<string | null>(null);
+  const [asking, setAsking] = useState(false);
   const recordings = useStore((s) => s.recordings);
   const docLang = useStore((s) => s.lang);
   const course = useStore((s) => s.course);
@@ -30,6 +35,8 @@ export default function AskDialog() {
     if (!ask) return;
     setStatus(null);
     setSaved(false);
+    savedId.current = undefined;
+    setAnswer(null);
     setShowPrompt(false);
     setImage(ask.page && ask.bounds ? cropPage(ask.page, ask.bounds) : null);
     setText('');
@@ -68,9 +75,9 @@ export default function AskDialog() {
   });
 
   const record = async () => {
-    if (saved) return;
+    if (saved) return savedId.current;
     setSaved(true);
-    await saveQuestion({
+    savedId.current = await saveQuestion({
       page: ask.page,
       bounds: ask.bounds,
       image: image ? dataUrlToBlob(image) : undefined,
@@ -79,6 +86,30 @@ export default function AskDialog() {
       recId: ask.segment?.recId ?? ask.recId,
       t: ask.segment?.start ?? ask.t,
     });
+    return savedId.current;
+  };
+
+  // Ask the engine set up under ✨ AI right here: the answer is saved with the question, which then
+  // gets its memory card automatically.
+  const askHere = async () => {
+    setAnswer(null);
+    setStatus(null);
+    const problem = await engineProblem();
+    if (problem) {
+      setStatus(`⚠️ ${problem} (툴바의 ✨ AI에서 설정)`);
+      return;
+    }
+    setAsking(true);
+    try {
+      const text = await askAI(prompt, image ?? undefined);
+      setAnswer(text);
+      const id = await record();
+      if (id) updateQuestion(id, { answer: text });
+    } catch (e) {
+      setStatus(`⚠️ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setAsking(false);
+    }
   };
 
   const run = async (fn: () => Promise<void>, ok: string) => {
@@ -154,8 +185,17 @@ export default function AskDialog() {
         </button>
         {showPrompt && <pre className="prompt-preview">{prompt}</pre>}
 
-        <button className="primary big" onClick={() => run(() => shareQuestion(prompt, image ?? undefined), '보냈어요. 질문 내용은 클립보드에도 복사돼 있어요.')}>
-          공유 → Claude / ChatGPT 선택
+        <button className="primary big" disabled={asking} onClick={askHere}>
+          {asking ? 'AI가 답하는 중…' : '여기서 바로 답 받기'}
+        </button>
+        {answer && (
+          <div className="ask-answer">
+            <Markdown text={answer} />
+            <div className="muted">AI 질문 탭에 저장했고, 기억 카드도 만들고 있어요.</div>
+          </div>
+        )}
+        <button className="big" onClick={() => run(() => shareQuestion(prompt, image ?? undefined), '보냈어요. 질문 내용은 클립보드에도 복사돼 있어요.')}>
+          공유 → Claude / ChatGPT 앱
         </button>
         <div className="row-wrap">
           {image && <button onClick={() => run(() => copyImage(image), '이미지를 복사했어요. 앱에서 붙여넣기 하세요.')}>이미지 복사</button>}
@@ -165,7 +205,7 @@ export default function AskDialog() {
         </div>
         {status && <div className="status">{status}</div>}
         <div className="hint">
-          팁: Claude 앱을 화면 옆에 띄워두면(Slide Over / Stage Manager) 노트를 보면서 바로 답을 볼 수 있어요. 질문은 "AI 질문" 탭에 저장되고, 받은 답을 붙여넣어 둘 수 있어요.
+          "여기서 바로 답 받기"는 ✨ AI에 설정한 엔진으로 답을 받아 AI 질문 탭에 저장하고 기억 카드를 만들어요. Claude는 선택한 부분 이미지도 같이 봐요. Claude·ChatGPT 앱으로 보낸 경우에는 받은 답을 AI 질문 탭에 붙여넣으면 카드가 만들어져요.
         </div>
       </div>
     </div>

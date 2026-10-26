@@ -227,11 +227,15 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
       ctx.lineWidth = 2;
       ctx.strokeStyle = '#7c3aed';
       ctx.fillStyle = 'rgba(124,58,237,.08)';
-      ctx.beginPath();
-      d.points.forEach((p, i) => (i ? ctx.lineTo(p.x * scale, p.y * scale) : ctx.moveTo(p.x * scale, p.y * scale)));
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+      // A rectangle from where the drag started to where it is now: what gets captured.
+      const a = d.points[0];
+      const b = d.points[d.points.length - 1];
+      const x = Math.min(a.x, b.x) * scale;
+      const y = Math.min(a.y, b.y) * scale;
+      const w = Math.abs(b.x - a.x) * scale;
+      const h = Math.abs(b.y - a.y) * scale;
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeRect(x, y, w, h);
       ctx.restore();
     }
   };
@@ -315,9 +319,9 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
       });
     }
     if (d.mode === 'lasso') {
-      const xs = d.points.map((p) => p.x);
-      const ys = d.points.map((p) => p.y);
-      const bounds = { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) };
+      const a = d.points[0];
+      const b = d.points[d.points.length - 1];
+      const bounds = { minX: Math.min(a.x, b.x), minY: Math.min(a.y, b.y), maxX: Math.max(a.x, b.x), maxY: Math.max(a.y, b.y) };
       if (bounds.maxX - bounds.minX > 8 && bounds.maxY - bounds.minY > 8) {
         const st = useStore.getState();
         let recId = st.activeRec?.id;
