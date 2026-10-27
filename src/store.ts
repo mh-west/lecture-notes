@@ -1,6 +1,6 @@
 import { Directory, Filesystem } from '@capacitor/filesystem';
 import { create } from 'zustand';
-import { db, recordingBlob, uid, type Course, type LectureLang, type MemoryCard, type Question, type Recording, type Segment, type Stroke, type Summary } from './db';
+import { db, recordingBlob, uid, type Course, type LectureLang, type MemoryCard, type Question, type Recording, type Revision, type Segment, type Stroke, type Summary } from './db';
 import { fmtTime } from './ink';
 import { engineProblem, loadSettings, makeMemoryCard, summarize, translateLines, type Glossary, type PageContext } from './llm';
 import { currentPdf, pageText } from './pdf';
@@ -23,9 +23,9 @@ function lsSet(k: string, v: string) {
   }
 }
 
-export type Tool = 'pen' | 'highlighter' | 'eraser' | 'lasso';
+export type Tool = 'pen' | 'highlighter' | 'eraser' | 'lasso' | 'select';
 
-type Op = { type: 'add' | 'delete'; strokes: Stroke[] };
+type Op = { type: 'add' | 'delete'; strokes: Stroke[] } | { type: 'replace'; before: Stroke[]; after: Stroke[] };
 
 export type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
 
@@ -54,6 +54,10 @@ interface State {
   overview: boolean;
   undoStack: Op[];
   redoStack: Op[];
+  eraserSize: number; // eraser radius in screen px, so it feels the same at any zoom
+  selection: { page: number; ids: string[] } | null; // strokes picked with the select tool
+  revisions: Revision[];
+  revising: { recId: string; msg: string } | null;
 
   // recording
   activeRec: Recording | null;
@@ -95,6 +99,15 @@ interface State {
   /** `at`: when the stroke was started (wall clock ms), if earlier than now; `id`: preassigned id. */
   addStroke: (s: Omit<Stroke, 'id' | 'docId' | 'createdAt' | 'recId' | 't'>, opts?: { at?: number; id?: string }) => Stroke | undefined;
   deleteStrokes: (ids: string[]) => void;
+  setEraserSize: (r: number) => void;
+  setSelection: (sel: State['selection']) => void;
+  /** Shift strokes by (dx, dy) PDF units, as one undoable step. */
+  moveStrokes: (ids: string[], dx: number, dy: number) => void;
+  /** Listen to a finished recording again (whole file, course terms) and translate it with slide context. */
+  reviseRecording: (recId: string) => Promise<void>;
+  /** Replace the live captions with the careful pass. */
+  adoptRevision: (recId: string) => Promise<void>;
+  discardRevision: (recId: string) => Promise<void>;
   undo: () => void;
   redo: () => void;
   recTime: () => number | undefined;
@@ -168,6 +181,7 @@ function pickMime() {
 }
 
 async function applyOp(op: Op, invert: boolean) {
+  if (op.type === 'replace') return void (await db.strokes.bulkPut(invert ? op.before : op.after));
   const adding = (op.type === 'add') !== invert;
   if (adding) await db.strokes.bulkPut(op.strokes);
   else await db.strokes.bulkDelete(op.strokes.map((s) => s.id));
@@ -303,6 +317,10 @@ export const useStore = create<State>((set, get) => {
     overview: false,
     undoStack: [],
     redoStack: [],
+    eraserSize: Number(lsGet('eraserSize')) || 12,
+    selection: null,
+    revisions: [],
+    revising: null,
     activeRec: null,
     recStartPerf: 0,
     partial: '',
@@ -328,38 +346,39 @@ export const useStore = create<State>((set, get) => {
     openDoc: async (id) => {
       if (get().activeRec) await get().stopRecording();
       audio.pause();
-      const reset = { undoStack: [], redoStack: [], replayT: null, playingRecId: null, ask: null, partial: '', viewPage: 1, pageOrder: [] };
+      const reset = { selection: null, undoStack: [], redoStack: [], replayT: null, playingRecId: null, ask: null, partial: '', viewPage: 1, pageOrder: [] };
       if (!id) {
-        set({ docId: null, strokes: [], recordings: [], segments: [], questions: [], summaries: [], course: null, ...reset });
+        set({ docId: null, strokes: [], recordings: [], segments: [], questions: [], summaries: [], revisions: [], course: null, ...reset });
         return;
       }
-      const [strokes, recordings, segments, questions, summaries] = await Promise.all([
+      const [strokes, recordings, segments, questions, summaries, revisions] = await Promise.all([
         db.strokes.where('docId').equals(id).toArray(),
         db.recordings.where('docId').equals(id).sortBy('startedAt'),
         db.segments.where('docId').equals(id).sortBy('start'),
         db.questions.where('docId').equals(id).sortBy('createdAt'),
         db.summaries.where('docId').equals(id).toArray(),
+        db.revisions.where('docId').equals(id).toArray(),
       ]);
       const doc = await db.docs.get(id);
       const course = (doc?.courseId && (await db.courses.get(doc.courseId))) || null;
       const saved = lsGet(`lang:${id}`);
       const lang: LectureLang = saved === 'ko-KR' || saved === 'en-US' ? saved : (course?.lang ?? 'en-US');
-      set({ docId: id, strokes, recordings, segments, questions, summaries, lang, course, ...reset });
+      set({ docId: id, strokes, recordings, segments, questions, summaries, revisions, lang, course, ...reset });
     },
 
     // Highlighter with a dark ink colour looks like grey mud; default it to yellow.
     setTool: (tool) =>
-      set(tool === 'highlighter' && ['#1f2937', '#2563eb', '#9333ea'].includes(get().color) ? { tool, color: '#f59e0b' } : { tool }),
+      set(tool === 'highlighter' && ['#1f2937', '#2563eb', '#9333ea'].includes(get().color) ? { tool, color: '#f59e0b', selection: null } : { tool, selection: null }),
     // Apple Pencil double-tap: eraser ↔ the tool in use before it.
     toggleEraser: () => {
       const { tool } = get();
       if (tool === 'eraser') set({ tool: toolBeforeEraser });
       else {
-        toolBeforeEraser = tool === 'lasso' ? 'pen' : tool;
-        set({ tool: 'eraser' });
+        toolBeforeEraser = tool === 'lasso' || tool === 'select' ? 'pen' : tool;
+        set({ tool: 'eraser', selection: null });
       }
     },
-    setColor: (color) => set({ color, tool: get().tool === 'eraser' || get().tool === 'lasso' ? 'pen' : get().tool }),
+    setColor: (color) => set({ color, selection: null, tool: ['eraser', 'lasso', 'select'].includes(get().tool) ? 'pen' : get().tool }),
     setSize: (size) => set({ size }),
     setZoom: (zoom) => set({ zoom }),
     setFingerDraw: (fingerDraw) => set({ fingerDraw }),
@@ -407,14 +426,52 @@ export const useStore = create<State>((set, get) => {
       const idSet = new Set(ids);
       const removed = get().strokes.filter((s) => idSet.has(s.id));
       const op: Op = { type: 'delete', strokes: removed };
-      set((st) => ({ strokes: st.strokes.filter((s) => !idSet.has(s.id)), undoStack: [...st.undoStack, op], redoStack: [] }));
+      set((st) => ({
+        strokes: st.strokes.filter((s) => !idSet.has(s.id)),
+        undoStack: [...st.undoStack, op],
+        redoStack: [],
+        selection: st.selection && st.selection.ids.some((i) => idSet.has(i)) ? null : st.selection,
+      }));
       db.strokes.bulkDelete(ids);
+    },
+
+    setEraserSize: (eraserSize) => {
+      lsSet('eraserSize', String(eraserSize));
+      set({ eraserSize });
+    },
+
+    setSelection: (selection) => set({ selection }),
+
+    moveStrokes: (ids, dx, dy) => {
+      if (!ids.length || (!dx && !dy)) return;
+      const idSet = new Set(ids);
+      const before = get().strokes.filter((s) => idSet.has(s.id));
+      const after = before.map((s) => ({
+        ...s,
+        points: s.points.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy })),
+        // PencilKit strokes keep their rendered image; only where it is drawn moves.
+        pk: s.pk && { ...s.pk, bounds: { ...s.pk.bounds, x: s.pk.bounds.x + dx, y: s.pk.bounds.y + dy } },
+      }));
+      const byId = new Map(after.map((s) => [s.id, s]));
+      const op: Op = { type: 'replace', before, after };
+      set((st) => ({ strokes: st.strokes.map((s) => byId.get(s.id) ?? s), undoStack: [...st.undoStack, op], redoStack: [] }));
+      db.strokes.bulkPut(after);
     },
 
     undo: () => {
       const op = get().undoStack.at(-1);
       if (!op) return;
       applyOp(op, true);
+      if (op.type === 'replace') {
+        const byId = new Map(op.before.map((s) => [s.id, s]));
+        set((st) => ({
+          strokes: st.strokes.map((s) => byId.get(s.id) ?? s),
+          undoStack: st.undoStack.slice(0, -1),
+          redoStack: [...st.redoStack, op],
+          selection: null,
+        }));
+        return;
+      }
       const ids = new Set(op.strokes.map((s) => s.id));
       set((st) => ({
         strokes: op.type === 'add' ? st.strokes.filter((s) => !ids.has(s.id)) : [...st.strokes, ...op.strokes],
@@ -427,6 +484,16 @@ export const useStore = create<State>((set, get) => {
       const op = get().redoStack.at(-1);
       if (!op) return;
       applyOp(op, false);
+      if (op.type === 'replace') {
+        const byId = new Map(op.after.map((s) => [s.id, s]));
+        set((st) => ({
+          strokes: st.strokes.map((s) => byId.get(s.id) ?? s),
+          redoStack: st.redoStack.slice(0, -1),
+          undoStack: [...st.undoStack, op],
+          selection: null,
+        }));
+        return;
+      }
       const ids = new Set(op.strokes.map((s) => s.id));
       set((st) => ({
         strokes: op.type === 'add' ? [...st.strokes, ...op.strokes] : st.strokes.filter((s) => !ids.has(s.id)),
@@ -558,6 +625,7 @@ export const useStore = create<State>((set, get) => {
         set((st) => ({
           segments: [...st.segments.filter((x) => x.recId !== recId), ...segs],
           summaries: st.summaries.filter((x) => x.recId !== recId),
+        revisions: st.revisions.filter((x) => x.recId !== recId),
           recordings: st.recordings.map((r) => (r.id === recId ? { ...r, lang } : r)),
         }));
       } catch (e) {
@@ -577,6 +645,78 @@ export const useStore = create<State>((set, get) => {
       }
     },
 
+    reviseRecording: async (recId) => {
+      const { docId } = get();
+      const rec = get().recordings.find((r) => r.id === recId);
+      if (!docId || !rec || !isNative || get().revising || get().importing || get().activeRec?.id === recId) return;
+      const korean = rec.lang === 'ko-KR';
+      const lang = rec.lang ?? get().lang;
+      if (!korean) {
+        const problem = await engineProblem();
+        if (problem) return void set({ captionError: `정밀 번역을 할 수 없어요: ${problem}` });
+      }
+      const step = (msg: string) => set({ revising: { recId, msg } });
+      step('녹음 파일 다시 듣는 중…');
+      const { uri } = await Filesystem.writeFile({
+        path: `revise-${recId}.m4a`,
+        data: await blobBase64(await recordingBlob(rec)),
+        directory: Directory.Cache,
+      });
+      const duration = rec.endedAt ? (rec.endedAt - rec.startedAt) / 1000 : 0;
+      const h = await LectureAudio.addListener('fileProgress', (e) =>
+        step(`녹음 파일 다시 듣는 중… ${duration ? Math.min(99, Math.round((e.seconds / duration) * 100)) : 0}%`),
+      );
+      try {
+        // Whole-file recognition sees every sentence to the end (no live guessing) and gets the course terms.
+        const vocabulary = await recognitionVocabulary(docId, get().course, lang);
+        const { segments } = await LectureAudio.transcribeFile({ path: decodeURIComponent(new URL(uri).pathname), vocabulary, locale: lang });
+        h.remove();
+        const lines: Revision['lines'] = segments.map((x) => ({ start: x.start, end: x.end, text: x.text }));
+        if (!korean) {
+          const g = await glossary();
+          for (let i = 0; i < lines.length; i += 8) {
+            step(`강의 용어·슬라이드로 번역 중… ${Math.min(i + 8, lines.length)}/${lines.length}`);
+            const batch = lines.slice(i, i + 8);
+            const ctx = await pageContext(pageAt(recId, (batch[0].start + batch[batch.length - 1].end) / 2));
+            const out = await translateLines(batch.map((l) => l.text), ctx, lines.slice(Math.max(0, i - 4), i).map((l) => l.text), g);
+            batch.forEach((l, j) => (l.ko2 = out[j] ?? ''));
+          }
+        }
+        const revision: Revision = { recId, docId, createdAt: Date.now(), lines };
+        await db.revisions.put(revision);
+        set((st) => ({ revisions: [...st.revisions.filter((r) => r.recId !== recId), revision] }));
+      } catch (e) {
+        set({ captionError: `정밀 다시 듣기 실패: ${errMsg(e)}` });
+      } finally {
+        h.remove();
+        Filesystem.deleteFile({ path: uri }).catch(() => {});
+        set({ revising: null });
+      }
+    },
+
+    adoptRevision: async (recId) => {
+      const { docId } = get();
+      const rev = get().revisions.find((r) => r.recId === recId);
+      if (!docId || !rev) return;
+      const segs: Segment[] = rev.lines.map((l) => ({ id: uid(), docId, recId, ...l }));
+      await db.transaction('rw', [db.segments, db.summaries, db.revisions], async () => {
+        await db.segments.where('recId').equals(recId).delete();
+        await db.segments.bulkPut(segs);
+        await db.summaries.delete(recId); // it described the old captions
+        await db.revisions.delete(recId);
+      });
+      set((st) => ({
+        segments: [...st.segments.filter((x) => x.recId !== recId), ...segs],
+        summaries: st.summaries.filter((x) => x.recId !== recId),
+        revisions: st.revisions.filter((r) => r.recId !== recId),
+      }));
+    },
+
+    discardRevision: async (recId) => {
+      await db.revisions.delete(recId);
+      set((st) => ({ revisions: st.revisions.filter((r) => r.recId !== recId) }));
+    },
+
     deleteRecording: async (recId) => {
       const { docId } = get();
       if (!docId || get().activeRec?.id === recId) return;
@@ -586,8 +726,9 @@ export const useStore = create<State>((set, get) => {
         audioRecId = null;
       }
       const untime = (s: Stroke): Stroke => (s.recId === recId ? { ...s, recId: undefined, t: undefined } : s);
-      await db.transaction('rw', [db.recordings, db.chunks, db.segments, db.summaries, db.strokes], async () => {
+      await db.transaction('rw', [db.recordings, db.chunks, db.segments, db.summaries, db.strokes, db.revisions], async () => {
         await db.chunks.where('recId').equals(recId).delete();
+        await db.revisions.delete(recId);
         await db.segments.where('recId').equals(recId).delete();
         await db.summaries.delete(recId);
         await db.strokes.where('docId').equals(docId).filter((s) => s.recId === recId).modify((s) => {

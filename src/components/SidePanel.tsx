@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildSummaryPrompt, shareQuestion } from '../ask';
-import { db, type Segment } from '../db';
+import { db, type Revision, type Segment } from '../db';
 import { loadSettings } from '../llm';
 import Markdown from './Markdown';
 import Questions from './Questions';
 import TermsPanel from './TermsPanel';
 import { isNative } from '../native';
 import { currentPdf } from '../pdf';
-import { pdfAllText } from '../terms';
+import { pdfAllText, recognitionVocabulary } from '../terms';
 import { fmtTime, groupStrokes } from '../ink';
 import { audio, useStore } from '../store';
 
@@ -153,6 +153,106 @@ function SummaryButton({ recId, lines, korean }: { recId: string; lines: Segment
   );
 }
 
+const norm = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+
+/** Live captions next to the careful second pass, with what changed marked. */
+function CompareView({ revision, lines, korean }: { revision: Revision; lines: Segment[]; korean: boolean }) {
+  const playAt = useStore((s) => s.playAt);
+  const adoptRevision = useStore((s) => s.adoptRevision);
+  const discardRevision = useStore((s) => s.discardRevision);
+  const docId = useStore((s) => s.docId);
+  const course = useStore((s) => s.course);
+  const lang = useStore((s) => s.lang);
+  const [terms, setTerms] = useState<string[]>([]);
+  const [onlyChanged, setOnlyChanged] = useState(false);
+  useEffect(() => {
+    if (docId) recognitionVocabulary(docId, course, lang).then(setTerms).catch(() => setTerms([]));
+  }, [docId, course, lang]);
+
+  const rows = useMemo(() => {
+    // Each live line goes under the one careful-pass line it overlaps most in time.
+    const owner = new Map<string, number>();
+    for (const l of lines) {
+      let best = -1;
+      let bestOverlap = -Infinity;
+      revision.lines.forEach((r, i) => {
+        const overlap = Math.min(l.end, r.end) - Math.max(l.start, r.start);
+        if (overlap > bestOverlap) {
+          bestOverlap = overlap;
+          best = i;
+        }
+      });
+      if (best >= 0 && bestOverlap > -1) owner.set(l.id, best);
+    }
+    return revision.lines.map((r, i) => {
+        const live = lines.filter((l) => owner.get(l.id) === i);
+        const liveText = live.map((l) => l.text).join(' ');
+        const liveKo = live.map((l) => l.ko2 ?? l.ko ?? '').filter(Boolean).join(' ');
+        const liveWords = new Set(liveText.split(/\s+/).map(norm));
+        const words = r.text.split(/\s+/).map((w) => ({ w, changed: !!norm(w) && !liveWords.has(norm(w)) }));
+        const fixed = terms.filter((t) => r.text.toLowerCase().includes(t.toLowerCase()) && !liveText.toLowerCase().includes(t.toLowerCase()));
+        return { r, liveText, liveKo, words, fixed, changed: words.some((x) => x.changed) || !live.length };
+      });
+  }, [revision, lines, terms]);
+
+  const fixCount = new Map<string, number>();
+  for (const row of rows) for (const t of row.fixed) fixCount.set(t, (fixCount.get(t) ?? 0) + 1);
+  const changed = rows.filter((x) => x.changed).length;
+
+  return (
+    <div className="compare">
+      <div className="compare-stats">
+        <div>
+          정밀본 {rows.length}줄 중 <b>{changed}줄</b>에서 인식이 달라졌어요.
+          {fixCount.size > 0 && (
+            <div className="fixes">
+              실시간에서 놓친 강의 용어:{' '}
+              {[...fixCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([t, n]) => (
+                <span key={t} className="badge">{t}{n > 1 ? ` ×${n}` : ''}</span>
+              ))}
+            </div>
+          )}
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={onlyChanged} onChange={(e) => setOnlyChanged(e.target.checked)} /> 달라진 줄만
+        </label>
+        <div className="row-wrap">
+          <button
+            className="primary"
+            onClick={() => confirm('실시간 자막·번역을 정밀본으로 바꿀까요? (요약은 다시 만들어야 해요)') && adoptRevision(revision.recId)}
+          >
+            정밀본으로 바꾸기
+          </button>
+          <button onClick={() => confirm('정밀본을 지울까요?') && discardRevision(revision.recId)}>정밀본 지우기</button>
+        </div>
+      </div>
+      <ol className="lines compare-lines">
+        {rows.filter((x) => !onlyChanged || x.changed).map(({ r, liveText, liveKo, words }) => (
+          <li key={r.start}>
+            <button className="ts" onClick={() => playAt(revision.recId, r.start)}>{fmtTime(r.start)}</button>
+            <div className="line-body">
+              <div className="cmp live">
+                <span className="cmp-tag">실시간</span>
+                <div className="en">{liveText || <i className="muted">(자막 없음)</i>}</div>
+                {!korean && liveKo && <div className="ko">{liveKo}</div>}
+              </div>
+              <div className="cmp revised">
+                <span className="cmp-tag">정밀</span>
+                <div className="en">
+                  {words.map((x, i) => (
+                    <span key={i}>{x.changed ? <mark>{x.w}</mark> : x.w} </span>
+                  ))}
+                </div>
+                {!korean && r.ko2 && <div className="ko ai">{r.ko2}</div>}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function Transcript() {
   const segments = useStore((s) => s.segments);
   const recordings = useStore((s) => s.recordings);
@@ -171,6 +271,10 @@ function Transcript() {
   const translatingAll = useStore((s) => s.translatingAll);
   const refineAll = useStore((s) => s.refineAll);
   const refining = useStore((s) => s.refining);
+  const revisions = useStore((s) => s.revisions);
+  const revising = useStore((s) => s.revising);
+  const reviseRecording = useStore((s) => s.reviseRecording);
+  const [compare, setCompare] = useState(true);
   const [chosen, setChosen] = useState<string | null>(null);
   const [showKo, setShowKo] = useState(true);
   const [now, setNow] = useState(-1);
@@ -180,6 +284,7 @@ function Transcript() {
   const recId = activeRec?.id ?? chosen ?? playingRecId ?? recordings.at(-1)?.id ?? null;
   const lines = useMemo(() => segments.filter((s) => s.recId === recId), [segments, recId]);
   const korean = recordings.find((r) => r.id === recId)?.lang === 'ko-KR';
+  const revision = revisions.find((r) => r.recId === recId);
 
   useEffect(() => {
     const on = () => setNow(audioRecIdMatches(recId) ? audio.currentTime : -1);
@@ -235,6 +340,25 @@ function Transcript() {
             {korean ? '영어로 다시' : '한국어로 다시'}
           </button>
         )}
+        {isNative && recId && recId !== activeRec?.id && lines.length > 0 && !revision && (
+          <button
+            title="녹음 파일 전체를 과목 용어와 함께 다시 듣고, 슬라이드 맥락으로 다시 번역해서 실시간 자막과 비교"
+            disabled={Boolean(revising || importing)}
+            onClick={() => {
+              if (confirm('녹음 전체를 다시 듣고 강의 용어·슬라이드로 다시 번역할까요?\n지금 자막은 그대로 두고, 결과를 나란히 비교해서 보여줘요. (녹음 길이에 따라 몇 분 걸려요)')) {
+                setCompare(true);
+                reviseRecording(recId);
+              }
+            }}
+          >
+            🎧 정밀 다시 듣기
+          </button>
+        )}
+        {revision && (
+          <button className={compare ? 'active' : ''} onClick={() => setCompare(!compare)} title="실시간 자막과 정밀본 비교">
+            ⇆ 비교
+          </button>
+        )}
         {isNative && (
           <button
             title="다른 앱에서 내보낸 녹음 파일 가져오기"
@@ -261,6 +385,7 @@ function Transcript() {
           </button>
         </div>
       )}
+      {revising?.recId === recId && <div className="hint">🎧 {revising.msg}</div>}
       {importing && (
         <div className="hint">
           녹음 파일 자막 만드는 중… {fmtTime(importing.seconds)} / {fmtTime(importing.duration)}
@@ -274,6 +399,9 @@ function Transcript() {
           {!isNative && ' (브라우저에서는 번역 없이 자막만 지원)'}
         </div>
       )}
+      {revision && compare ? (
+        <CompareView revision={revision} lines={lines} korean={korean} />
+      ) : (
       <ol
         className="lines"
         ref={listRef}
@@ -306,6 +434,7 @@ function Transcript() {
           </li>
         )}
       </ol>
+      )}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import AiSettings from './AiSettings';
 
 const COLORS = ['#1f2937', '#2563eb', '#dc2626', '#16a34a', '#9333ea', '#f59e0b'];
 const SIZES = [1.4, 2.2, 3.5];
+const ERASER_SIZES = [6, 12, 22]; // radius in screen px
 
 function LangToggle() {
   const lang = useStore((s) => s.lang);
@@ -70,8 +71,8 @@ function RecButton() {
 }
 
 export default function Toolbar({ onBack, title }: { onBack: () => void; title: string }) {
-  const { tool, color, size, zoom, fingerDraw, showOrder, overview, undoStack, redoStack } = useStore();
-  const { setTool, setColor, setSize, setZoom, setFingerDraw, setShowOrder, setOverview, undo, redo } = useStore();
+  const { tool, color, size, zoom, fingerDraw, showOrder, overview, undoStack, redoStack, eraserSize } = useStore();
+  const { setTool, setColor, setSize, setZoom, setFingerDraw, setShowOrder, setOverview, setEraserSize, undo, redo } = useStore();
   const [showSettings, setShowSettings] = useState(false);
   const addBlankPage = useStore((s) => s.addBlankPage);
 
@@ -93,6 +94,7 @@ export default function Toolbar({ onBack, title }: { onBack: () => void; title: 
       {toolBtn('pen', '✏️ 펜')}
       {toolBtn('highlighter', '🖍 형광')}
       {toolBtn('eraser', '🧽 지우개')}
+      {toolBtn('select', '⬚ 선택')}
       {toolBtn('lasso', '⭕ 질문')}
       <div className="sep" />
       {COLORS.map((c) => (
@@ -104,11 +106,17 @@ export default function Toolbar({ onBack, title }: { onBack: () => void; title: 
           aria-label={c}
         />
       ))}
-      {SIZES.map((s) => (
-        <button key={s} className={size === s ? 'active' : ''} onClick={() => setSize(s)} title="굵기">
-          <span className="size-dot" style={{ width: s * 3, height: s * 3 }} />
-        </button>
-      ))}
+      {tool === 'eraser'
+        ? ERASER_SIZES.map((r) => (
+            <button key={r} className={eraserSize === r ? 'active' : ''} onClick={() => setEraserSize(r)} title="지우개 크기">
+              <span className="eraser-dot" style={{ width: r * 1.2, height: r * 1.2 }} />
+            </button>
+          ))
+        : SIZES.map((s) => (
+            <button key={s} className={size === s ? 'active' : ''} onClick={() => setSize(s)} title="굵기">
+              <span className="size-dot" style={{ width: s * 3, height: s * 3 }} />
+            </button>
+          ))}
       <div className="sep" />
       <button onClick={undo} disabled={!undoStack.length}>↶</button>
       <button onClick={redo} disabled={!redoStack.length}>↷</button>

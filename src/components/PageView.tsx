@@ -8,7 +8,22 @@ import { nativeStrokes } from '../gestures';
 import { pinchCount, pinching, startInertia, stopInertia } from '../gestures';
 import { useStore } from '../store';
 
-const ERASER_R = 10; // eraser radius in PDF units
+/** Is (x, y) inside the polygon? (even-odd rule) */
+function inPolygon(x: number, y: number, poly: Point[]) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+const unionBounds = (list: Stroke[]) =>
+  list.map(strokeBounds).reduce((a, c) => ({
+    minX: Math.min(a.minX, c.minX), minY: Math.min(a.minY, c.minY),
+    maxX: Math.max(a.maxX, c.maxX), maxY: Math.max(a.maxY, c.maxY),
+  }));
 
 interface Props {
   pdf: PDFDoc;
@@ -39,6 +54,13 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
   const playingRecId = useStore((s) => s.playingRecId);
   const flash = useStore((s) => s.flash);
   const showOrder = useStore((s) => s.showOrder);
+  const eraserPx = useStore((s) => s.eraserSize);
+  const selection = useStore((s) => s.selection);
+  const ERASER_R = eraserPx / scale; // in PDF units: the same size on screen at any zoom
+  const [dragging, setDragging] = useState(false);
+  const selIds = useMemo(() => new Set(selection?.page === pageNum ? selection.ids : []), [selection, pageNum]);
+  const selected = useMemo(() => strokes.filter((s) => selIds.has(s.id)), [strokes, selIds]);
+  const selBounds = selected.length ? unionBounds(selected) : null;
 
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
@@ -98,9 +120,11 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
   }, [pdf, pageNum, scale, dpr, visible, width1, height1]);
 
   const shown = useMemo(() => {
+    // Strokes being dragged are drawn on the live layer instead, at their new spot.
+    if (dragging) return strokes.filter((s) => !selIds.has(s.id));
     if (replayT == null) return strokes;
     return strokes.filter((s) => s.recId === playingRecId && s.t != null && s.t <= replayT);
-  }, [strokes, replayT, playingRecId]);
+  }, [strokes, replayT, playingRecId, dragging, selIds]);
 
   // Committed ink. A new stroke only adds to what is already drawn; anything else (erase, undo, zoom) redraws.
   const drawn = useRef<{ strokes: Stroke[]; scale: number; v: number }>({ strokes: [], scale: 0, v: 0 });
@@ -159,7 +183,7 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
     return () => clearTimeout(t);
   }, [flash, strokes]);
 
-  const drawing = useRef<{ id: number; points: Point[]; moved: boolean; mode: 'draw' | 'erase' | 'tap' | 'lasso'; pen: boolean } | null>(null);
+  const drawing = useRef<{ id: number; points: Point[]; moved: boolean; mode: 'draw' | 'erase' | 'tap' | 'lasso' | 'select' | 'move'; pen: boolean } | null>(null);
 
   const rect = useRef<DOMRect | null>(null); // measured once per stroke; reading layout per event is slow
   const toPoint = (e: PointerEvent | React.PointerEvent): Point => {
@@ -196,7 +220,22 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
     const old = liveDirty.current;
     if (old) ctx.clearRect(old.x0, old.y0, old.x1 - old.x0, old.y1 - old.y0);
     liveDirty.current = null;
-    if (d && d.points.length && (d.mode === 'draw' || d.mode === 'lasso' || d.mode === 'erase')) {
+    if (d && d.mode === 'move' && selBounds && d.points.length > 1) {
+      // Dragging a selection: draw the picked strokes shifted by the drag.
+      const dx = d.points[1].x - d.points[0].x;
+      const dy = d.points[1].y - d.points[0].y;
+      ctx.save();
+      ctx.translate(dx * scale, dy * scale);
+      for (const st of selected) paintStroke(ctx, st, scale);
+      ctx.restore();
+      const pad = 24;
+      liveDirty.current = {
+        x0: (selBounds.minX + dx) * scale - pad, y0: (selBounds.minY + dy) * scale - pad,
+        x1: (selBounds.maxX + dx) * scale + pad, y1: (selBounds.maxY + dy) * scale + pad,
+      };
+      return;
+    }
+    if (d && d.points.length && (d.mode === 'draw' || d.mode === 'lasso' || d.mode === 'erase' || d.mode === 'select')) {
       const pad = Math.max(size * scale * 4, ERASER_R * scale) + 8;
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const p of d.points) {
@@ -218,6 +257,20 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
       ctx.fill();
       ctx.lineWidth = 1.5;
       ctx.strokeStyle = 'rgba(71,85,105,.8)';
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (d && d.mode === 'select' && d.points.length > 1) {
+      // Freehand lasso around the strokes to pick.
+      ctx.save();
+      ctx.setLineDash([6, 5]);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#2563eb';
+      ctx.fillStyle = 'rgba(37,99,235,.06)';
+      ctx.beginPath();
+      d.points.forEach((p, i) => (i ? ctx.lineTo(p.x * scale, p.y * scale) : ctx.moveTo(p.x * scale, p.y * scale)));
+      ctx.closePath();
+      ctx.fill();
       ctx.stroke();
       ctx.restore();
     }
@@ -245,7 +298,8 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
     if (drawing.current && !(e.pointerType === 'pen' && drawing.current.mode === 'tap')) return;
     pan.current = null;
     const isFinger = e.pointerType === 'touch';
-    const mode = isFinger && !fingerDraw ? 'tap' : tool === 'eraser' ? 'erase' : tool === 'lasso' ? 'lasso' : 'draw';
+    let mode: NonNullable<typeof drawing.current>['mode'] =
+      isFinger && !fingerDraw ? 'tap' : tool === 'eraser' ? 'erase' : tool === 'lasso' ? 'lasso' : tool === 'select' ? 'select' : 'draw';
     try {
       liveCanvas.current!.setPointerCapture(e.pointerId);
     } catch {
@@ -258,6 +312,16 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
     }
     rect.current = liveCanvas.current!.getBoundingClientRect();
     const p = toPoint(e);
+    if (mode === 'select') {
+      const pad = 12 / scale;
+      const b = selBounds;
+      if (b && p.x >= b.minX - pad && p.x <= b.maxX + pad && p.y >= b.minY - pad && p.y <= b.maxY + pad) {
+        mode = 'move'; // grabbed the current selection
+        setDragging(true);
+      } else if (useStore.getState().selection) {
+        useStore.getState().setSelection(null);
+      }
+    }
     drawing.current = { id: e.pointerId, points: [p], moved: false, mode, pen: e.pointerType === 'pen' };
     if (mode === 'erase') eraseAt(p);
     if (mode === 'draw' || mode === 'erase') renderLive();
@@ -274,7 +338,8 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
       if (d.mode === 'erase') {
         eraseAt(p);
         d.points = [p];
-      } else d.points.push(p);
+      } else if (d.mode === 'move') d.points = [d.points[0], p];
+      else d.points.push(p);
     }
     scheduleLive();
   };
@@ -321,6 +386,18 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
         color, size, points: d.points,
       });
     }
+    if (d.mode === 'move') {
+      setDragging(false);
+      const end = d.points[d.points.length - 1];
+      if (d.moved) useStore.getState().moveStrokes([...selIds], end.x - d.points[0].x, end.y - d.points[0].y);
+    }
+    if (d.mode === 'select') {
+      // A stroke is picked when most of its points fall inside the loop.
+      const ids = d.points.length > 2
+        ? strokes.filter((st) => st.points.filter((q) => inPolygon(q.x, q.y, d.points)).length >= st.points.length * 0.6).map((st) => st.id)
+        : [];
+      useStore.getState().setSelection(ids.length ? { page: pageNum, ids } : null);
+    }
     if (d.mode === 'lasso') {
       const a = d.points[0];
       const b = d.points[d.points.length - 1];
@@ -359,7 +436,8 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
   const onPointerCancel = (e: React.PointerEvent) => {
     const d = drawing.current;
     if (d?.id !== e.pointerId) return;
-    if (d.mode === 'draw' && d.points.length > 1) return onPointerUp(e);
+    if ((d.mode === 'draw' || d.mode === 'move' || d.mode === 'select') && d.points.length > 1) return onPointerUp(e);
+    if (d.mode === 'move') setDragging(false);
     drawing.current = null;
     rect.current = null;
     renderLive();
@@ -390,6 +468,32 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
             {g.index}
           </div>
         ))}
+      {selBounds && !dragging && (
+        <>
+          <div
+            className="selection-box"
+            style={{
+              left: selBounds.minX * scale - 8, top: selBounds.minY * scale - 8,
+              width: (selBounds.maxX - selBounds.minX) * scale + 16, height: (selBounds.maxY - selBounds.minY) * scale + 16,
+            }}
+          />
+          <div className="selection-menu" style={{ left: selBounds.minX * scale - 8, top: Math.max(4, selBounds.minY * scale - 52) }}>
+            <span className="muted">끌어서 이동</span>
+            <button
+              onClick={() => {
+                const st = useStore.getState();
+                const timed = selected.filter((x) => x.t != null).sort((a, b) => b.t! - a.t!)[0];
+                st.setSelection(null);
+                st.openAsk({ page: pageNum, bounds: selBounds, recId: timed?.recId, t: timed?.t });
+              }}
+            >
+              AI 질문
+            </button>
+            <button className="danger" onClick={() => useStore.getState().deleteStrokes([...selIds])}>삭제</button>
+            <button onClick={() => useStore.getState().setSelection(null)} aria-label="선택 해제">✕</button>
+          </div>
+        </>
+      )}
       {flashBox && (
         <div
           className="flash"

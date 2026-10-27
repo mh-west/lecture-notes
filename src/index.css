@@ -245,3 +245,27 @@ button.course-title b { font-size: 19px; }
 .earlier summary p { display: inline; margin: 0; }
 .ask-answer { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; max-height: 50vh; overflow-y: auto; font-size: 14px; line-height: 1.6; -webkit-user-select: text; user-select: text; }
 .ask-answer p { margin: 6px 0; }
+
+/* stroke selection */
+.selection-box { position: absolute; border: 1.5px dashed #2563eb; border-radius: 6px; background: rgba(37,99,235,.05); pointer-events: none; }
+.selection-menu {
+  position: absolute; display: flex; gap: 6px; align-items: center; padding: 4px 6px; border-radius: 10px;
+  background: var(--panel); box-shadow: 0 4px 16px rgba(0,0,0,.18); z-index: 4; white-space: nowrap;
+}
+.selection-menu button { min-height: 32px; padding: 4px 10px; }
+.selection-menu .muted { padding: 0 4px; font-size: 12px; }
+.eraser-sizes { display: flex; gap: 4px; align-items: center; }
+.eraser-dot { display: inline-block; border-radius: 50%; border: 1.5px solid currentColor; vertical-align: middle; }
+
+/* live vs careful-pass comparison */
+.compare { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.compare-stats { padding: 8px 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.compare-stats .fixes { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.compare-lines .cmp { position: relative; padding: 4px 6px 4px 44px; border-radius: 6px; }
+.compare-lines .cmp + .cmp { margin-top: 4px; }
+.compare-lines .cmp.live { background: var(--bg); }
+.compare-lines .cmp.live .en { color: var(--muted); font-size: 14px; }
+.compare-lines .cmp.revised { background: #f0fdf4; }
+.compare-lines .cmp-tag { position: absolute; left: 6px; top: 6px; font-size: 10px; font-weight: 700; color: var(--muted); }
+.compare-lines .cmp.revised .cmp-tag { color: #15803d; }
+.compare-lines mark { background: #fde68a; border-radius: 3px; padding: 0 1px; }

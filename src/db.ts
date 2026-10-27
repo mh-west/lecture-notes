@@ -82,6 +82,15 @@ export interface Segment {
   ko2?: string; // language-model translation using slide context; '' = filler only
 }
 
+/** A second, careful pass over a finished recording: the whole audio file recognised again with the
+ *  course terms, then translated with slide context. Shown next to the live captions for comparison. */
+export interface Revision {
+  recId: string;
+  docId: string;
+  createdAt: number;
+  lines: { start: number; end: number; text: string; ko2?: string }[];
+}
+
 export interface Summary {
   recId: string;
   docId: string;
@@ -123,6 +132,7 @@ export const db = new Dexie('lecture-notes') as Dexie & {
   questions: EntityTable<Question, 'id'>;
   summaries: EntityTable<Summary, 'recId'>;
   courses: EntityTable<Course, 'id'>;
+  revisions: EntityTable<Revision, 'recId'>;
 };
 
 db.version(1).stores({
@@ -141,6 +151,9 @@ db.version(3).stores({
 db.version(4).stores({
   docs: 'id, updatedAt, courseId',
   courses: 'id, createdAt',
+});
+db.version(5).stores({
+  revisions: 'recId, docId',
 });
 
 export const uid = () => crypto.randomUUID();
