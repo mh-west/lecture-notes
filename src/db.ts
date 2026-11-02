@@ -123,6 +123,14 @@ export interface MemoryCard {
   madeAt: number;
 }
 
+/** A feature idea jotted down while using the app, to hand to Claude later. */
+export interface Idea {
+  id: string;
+  text: string;
+  createdAt: number;
+  done?: boolean;
+}
+
 export const db = new Dexie('lecture-notes') as Dexie & {
   docs: EntityTable<Doc, 'id'>;
   strokes: EntityTable<Stroke, 'id'>;
@@ -133,6 +141,7 @@ export const db = new Dexie('lecture-notes') as Dexie & {
   summaries: EntityTable<Summary, 'recId'>;
   courses: EntityTable<Course, 'id'>;
   revisions: EntityTable<Revision, 'recId'>;
+  ideas: EntityTable<Idea, 'id'>;
 };
 
 db.version(1).stores({
@@ -154,6 +163,9 @@ db.version(4).stores({
 });
 db.version(5).stores({
   revisions: 'recId, docId',
+});
+db.version(6).stores({
+  ideas: 'id, createdAt',
 });
 
 export const uid = () => crypto.randomUUID();

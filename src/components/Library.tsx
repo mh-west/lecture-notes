@@ -5,6 +5,7 @@ import { exportCourses, importCourses } from '../courseFile';
 import { docTerms } from '../terms';
 import ExpiryBanner from './ExpiryBanner';
 import Features from './Features';
+import IdeasBox from './IdeasBox';
 
 const SEEN_KEY = 'featuresSeen';
 const COLLAPSED_KEY = 'collapsedFolders';
@@ -121,6 +122,7 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
         <input ref={courseInput} type="file" accept="application/json,.json" hidden onChange={(e) => importFolders(e.target.files)} />
       </div>
       {notice && <div className="hint" onClick={() => setNotice(null)}>{notice}</div>}
+      <IdeasBox />
       <ExpiryBanner />
       {docs && !docs.length && !courses?.length && (
         <p className="empty">
