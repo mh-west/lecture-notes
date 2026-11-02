@@ -121,6 +121,7 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
         setPdf(doc);
         ensureDocTerms(rec, doc).catch(() => {}); // background: speech hints for this lecture
       } catch (e) {
+        console.error('[pdf] open failed', e instanceof Error ? `${e.name}: ${e.message}` : String(e));
         setError(String(e));
       }
     })();

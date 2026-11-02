@@ -28,7 +28,15 @@ export type PDFDoc = pdfjs.PDFDocumentProxy;
 
 export async function loadPdf(blob: Blob): Promise<PDFDoc> {
   const data = new Uint8Array(await blob.arrayBuffer());
-  return pdfjs.getDocument({ data }).promise;
+  // Without the character maps, PDFs with Korean (CID) fonts show garbled or missing text.
+  const base = `${location.origin}/pdfjs/`;
+  return pdfjs.getDocument({
+    data,
+    cMapUrl: `${base}cmaps/`,
+    cMapPacked: true,
+    standardFontDataUrl: `${base}standard_fonts/`,
+    wasmUrl: `${base}wasm/`,
+  }).promise;
 }
 
 // The document currently open in the viewer (used to pull page text for AI questions).
