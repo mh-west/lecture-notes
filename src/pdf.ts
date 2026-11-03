@@ -26,6 +26,35 @@ if (!(Symbol.asyncIterator in ReadableStream.prototype)) {
 
 export type PDFDoc = pdfjs.PDFDocumentProxy;
 
+/**
+ * Loads pdf.js's extra data (character maps, standard fonts, image decoders) with fetch. pdf.js itself
+ * only fetches http(s) URLs and falls back to XMLHttpRequest for the app's capacitor:// pages, which on
+ * the iPad could leave a page's rendering waiting forever (a blank white page). A timeout turns any hang
+ * into an error, so the page still renders, just without that font.
+ */
+class FetchDataFactory {
+  private urls: Record<string, string | null>;
+  constructor(o: { cMapUrl?: string | null; standardFontDataUrl?: string | null; wasmUrl?: string | null }) {
+    this.urls = { cMapUrl: o.cMapUrl ?? null, standardFontDataUrl: o.standardFontDataUrl ?? null, wasmUrl: o.wasmUrl ?? null };
+  }
+  async fetch({ kind, filename }: { kind: string; filename: string }): Promise<Uint8Array> {
+    const base = this.urls[kind];
+    if (!base) throw new Error(`Ensure that the \`${kind}\` API parameter is provided.`);
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 10_000);
+    try {
+      const res = await fetch(`${base}${filename}`, { signal: ctl.signal });
+      if (!res.ok) throw new Error(`${res.status}`);
+      return new Uint8Array(await res.arrayBuffer());
+    } catch (e) {
+      console.warn('[pdf] data load failed', filename, String(e));
+      throw new Error(`Unable to load ${kind} data: ${filename}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export async function loadPdf(blob: Blob): Promise<PDFDoc> {
   const data = new Uint8Array(await blob.arrayBuffer());
   // Without the character maps, PDFs with Korean (CID) fonts show garbled or missing text.
@@ -36,6 +65,7 @@ export async function loadPdf(blob: Blob): Promise<PDFDoc> {
     cMapPacked: true,
     standardFontDataUrl: `${base}standard_fonts/`,
     wasmUrl: `${base}wasm/`,
+    BinaryDataFactory: FetchDataFactory,
   }).promise;
 }
 

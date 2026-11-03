@@ -281,9 +281,10 @@ button.course-title b { font-size: 19px; }
 .ideas-list .idea-text { flex: 1; white-space: pre-wrap; -webkit-user-select: text; user-select: text; }
 .small-btn { min-height: 28px; padding: 2px 8px; }
 
-.share-wrap { position: relative; }
-.share-menu {
-  position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; display: flex; flex-direction: column; gap: 2px;
-  background: #fff; border: 1px solid var(--line, #e5e7eb); border-radius: 10px; padding: 4px; box-shadow: 0 6px 20px rgba(0,0,0,.12);
-}
-.share-menu button { white-space: nowrap; text-align: left; }
+.share-modal { max-width: 360px; }
+.page-modal { max-width: 340px; }
+.orient-choices { display: flex; gap: 12px; }
+.orient-choices button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 16px 8px; font-size: 15px; }
+.orient-shape { display: block; border: 2px solid var(--text); border-radius: 3px; background: #fff; }
+.orient-shape.portrait { width: 40px; height: 56px; }
+.orient-shape.landscape { width: 56px; height: 40px; margin: 8px 0; }

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { db, uid, type Stroke } from '../db';
+import { blankSize, db, uid, type Stroke } from '../db';
 import { groupStrokes } from '../ink';
 import { nativeStrokes, pinching, setPinching, startInertia, stopInertia } from '../gestures';
 import { addInkImage } from '../inkImages';
@@ -115,10 +115,25 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
         if (cancelled) return void doc.loadingTask.destroy();
         const saved = rec.pages?.filter((k) => k < 0 || k <= s.length);
         useStore.getState().setPageOrder(saved?.length ? saved : s.map((_, i) => i + 1));
+        useStore.setState({ blankOrient: rec.blankOrient ?? {} });
         setSizes(s);
         currentPdf.doc = doc;
         currentPdf.ocr = rec.ocrPages; // scanned PDF: page text read earlier with OCR
         setPdf(doc);
+        // Where the view landed, for diagnosing blank screens from the device log.
+        for (const ms of [5000]) {
+          setTimeout(() => {
+            const el = scrollRef.current;
+            const pg = pagesRef.current;
+            if (!el || !pg) return;
+            const r = el.getBoundingClientRect();
+            const slots = [...el.querySelectorAll<HTMLElement>('[data-page]')];
+            const onScreen = slots.filter((x) => { const b = x.getBoundingClientRect(); return b.bottom > r.top && b.top < r.bottom; }).map((x) => x.dataset.page);
+            console.log('[geo]', ms, `view ${Math.round(r.width)}x${Math.round(r.height)} top=${Math.round(el.scrollTop)}/${el.scrollHeight} left=${Math.round(el.scrollLeft)}/${el.scrollWidth}`,
+              `pages ${pg.offsetWidth}x${pg.offsetHeight} style=${pg.getAttribute('style')}`, `slots=${slots.length} onScreen=${onScreen.join(',')}`,
+              `zoom=${useStore.getState().zoom}`);
+          }, ms);
+        }
         ensureDocTerms(rec, doc).catch(() => {}); // background: speech hints for this lecture
       } catch (e) {
         console.error('[pdf] open failed', e instanceof Error ? `${e.name}: ${e.message}` : String(e));
@@ -141,6 +156,8 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
 
   const displayWidth = Math.max(200, (containerW - 32) * zoom);
   const maxW = Math.max(...sizes.map((s) => s.w), 1);
+  const blankOrient = useStore((s) => s.blankOrient);
+  const sizeOf = (key: number) => (key > 0 ? sizes[key - 1] : blankSize(sizes[0], blankOrient[key]));
 
   // Is a dialog covering the pages? Then the native ink layer must not take touches meant for it.
   const [modalOpen, setModalOpen] = useState(false);
@@ -344,7 +361,7 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
       scrollRef.current.scrollTo({ top: el.offsetTop - 16 });
       return;
     }
-    const s = sizes[scrollTo.page - 1];
+    const s = sizeOf(scrollTo.page);
     const scale = (displayWidth * (s.w / maxW)) / s.w;
     scrollRef.current.scrollTo({ top: el.offsetTop + scrollTo.y * scale - 120, behavior: 'smooth' });
   }, [scrollTo]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -384,7 +401,7 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
       {pdf &&
         sizes.length > 0 &&
         order.map((key, i) => {
-          const s = key > 0 ? sizes[key - 1] : sizes[0]; // blank pages take the first page's size
+          const s = sizeOf(key); // blank pages: as wide as the first page, portrait or landscape
           return (
             <div key={key} data-page={key} className="page-slot">
               <PageView

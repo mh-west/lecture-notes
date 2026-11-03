@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { sharePdf } from '../exportPdf';
 import { fmtTime } from '../ink';
+import type { Orientation } from '../db';
 import { useStore, type Tool } from '../store';
 import AiSettings from './AiSettings';
 
@@ -90,17 +91,26 @@ function ShareButton() {
     }
   };
   return (
-    <div className="share-wrap">
-      <button disabled={Boolean(progress)} onClick={() => setOpen(!open)} title="PDF 공유·내보내기">
+    <>
+      <button disabled={Boolean(progress)} onClick={() => setOpen(true)} title="PDF 공유·내보내기">
         {progress ? `⬆︎ ${progress}` : '⬆︎ 공유'}
       </button>
+      {/* A dialog, not a dropdown: the toolbar scrolls sideways (clipping anything that pops out of it), and
+          .modal-backdrop also moves the iPad's Pencil layer out of the way. */}
       {open && (
-        <div className="share-menu">
-          <button onClick={() => run(true)}>필기 포함 PDF</button>
-          <button onClick={() => run(false)}>원본 PDF</button>
+        <div className="modal-backdrop" onClick={() => setOpen(false)}>
+          <div className="modal share-modal" onClick={(e) => e.stopPropagation()}>
+            <header>
+              <h2>PDF 공유</h2>
+              <button onClick={() => setOpen(false)} aria-label="닫기">✕</button>
+            </header>
+            <button className="primary big" onClick={() => run(true)}>필기 포함 PDF</button>
+            <button className="big" onClick={() => run(false)}>원본 PDF</button>
+            <div className="hint">필기 포함 PDF는 앱의 페이지 순서와 빈 페이지까지 그대로 담아요.</div>
+          </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -109,6 +119,11 @@ export default function Toolbar({ onBack, title }: { onBack: () => void; title: 
   const { setTool, setColor, setSize, setZoom, setFingerDraw, setShowOrder, setOverview, setEraserSize, undo, redo } = useStore();
   const [showSettings, setShowSettings] = useState(false);
   const addBlankPage = useStore((s) => s.addBlankPage);
+  const [addingPage, setAddingPage] = useState(false);
+  const addPage = (o: Orientation) => {
+    setAddingPage(false);
+    addBlankPage(o);
+  };
 
   const toolBtn = (t: Tool, label: string) => (
     <button className={tool === t ? 'active' : ''} onClick={() => setTool(t)}>
@@ -122,7 +137,28 @@ export default function Toolbar({ onBack, title }: { onBack: () => void; title: 
       <button className={overview ? 'active' : ''} onClick={() => setOverview(!overview)} title="전체 페이지 보기">
         ▦
       </button>
-      <button onClick={addBlankPage} title="지금 페이지 뒤에 빈 페이지 추가">＋ 빈 페이지</button>
+      <button onClick={() => setAddingPage(true)} title="지금 페이지 뒤에 빈 페이지 추가">＋ 빈 페이지</button>
+      {addingPage && (
+        <div className="modal-backdrop" onClick={() => setAddingPage(false)}>
+          <div className="modal page-modal" onClick={(e) => e.stopPropagation()}>
+            <header>
+              <h2>빈 페이지 추가</h2>
+              <button onClick={() => setAddingPage(false)} aria-label="닫기">✕</button>
+            </header>
+            <div className="orient-choices">
+              <button onClick={() => addPage('portrait')}>
+                <span className="orient-shape portrait" />
+                세로
+              </button>
+              <button onClick={() => addPage('landscape')}>
+                <span className="orient-shape landscape" />
+                가로
+              </button>
+            </div>
+            <div className="hint">지금 보는 페이지 바로 뒤에 추가돼요.</div>
+          </div>
+        </div>
+      )}
       <span className="title">{title}</span>
       <div className="sep" />
       {toolBtn('pen', '✏️ 펜')}

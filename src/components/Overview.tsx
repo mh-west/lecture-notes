@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Stroke } from '../db';
+import { blankSize, type Stroke } from '../db';
 import { paintStroke } from '../inkImages';
 import type { PDFDoc } from '../pdf';
 import { useStore } from '../store';
@@ -107,7 +107,11 @@ export default function Overview({ pdf, order, sizes, byPage, currentPage }: {
   pdf: PDFDoc; order: number[]; sizes: { w: number; h: number }[]; byPage: Map<number, Stroke[]>; currentPage: () => number;
 }) {
   const deleteBlankPage = useStore((s) => s.deleteBlankPage);
-  const blankRatio = sizes[0] ? sizes[0].h / sizes[0].w : 1.3;
+  const blankOrient = useStore((s) => s.blankOrient);
+  const blankRatio = (key: number) => {
+    const s = sizes[0] && blankSize(sizes[0], blankOrient[key]);
+    return s ? s.h / s.w : 1.3;
+  };
   const setOverview = useStore((s) => s.setOverview);
   const goToPage = useStore((s) => s.goToPage);
   const [tab, setTab] = useState<'pages' | 'outline'>('pages');
@@ -152,7 +156,7 @@ export default function Overview({ pdf, order, sizes, byPage, currentPage }: {
           <div className="overview-grid" ref={gridRef} style={{ gridTemplateColumns: `repeat(${grid.cols}, ${grid.w}px)` }}>
             {order.map((key, i) => (
               <div key={key} className={`thumb ${current === key ? 'current' : ''}`} role="button" onClick={() => goToPage(key)}>
-                <PageThumb pdf={pdf} pageNum={key} width={grid.w} strokes={byPage.get(key) ?? []} blankRatio={blankRatio} />
+                <PageThumb pdf={pdf} pageNum={key} width={grid.w} strokes={byPage.get(key) ?? []} blankRatio={blankRatio(key)} />
                 <span>
                   {i + 1}
                   {key < 0 && (

@@ -1,10 +1,20 @@
 import Dexie, { type EntityTable } from 'dexie';
 
+export type Orientation = 'portrait' | 'landscape';
+
+/** A blank page's size (PDF units): as wide as the first PDF page, upright or turned sideways. */
+export function blankSize(first: { w: number; h: number }, o?: Orientation) {
+  if (!o) return first;
+  const ratio = Math.max(first.w, first.h) / Math.min(first.w, first.h);
+  return { w: first.w, h: o === 'portrait' ? first.w * ratio : first.w / ratio };
+}
+
 export interface Doc {
   id: string;
   name: string;
   pdf: Blob;
   pages?: number[]; // display order: PDF page numbers, negative ids for added blank pages
+  blankOrient?: Record<number, Orientation>; // per blank page; missing = the first PDF page's shape
   createdAt: number;
   updatedAt: number;
   courseId?: string;

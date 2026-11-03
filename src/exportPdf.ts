@@ -1,7 +1,7 @@
 import { Directory, Filesystem } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { PDFDocument } from 'pdf-lib';
-import { db, type Stroke } from './db';
+import { blankSize, db, type Stroke } from './db';
 import { drawStroke } from './ink';
 import { isNative, LectureAudio } from './native';
 import { loadPdf } from './pdf';
@@ -78,9 +78,10 @@ async function withInk(docId: string, onProgress?: (done: number, total: number)
       onProgress?.(i, order.length);
       const ink = byPage.get(key) ?? [];
       if (key < 0) {
-        // Blank page: the size of the first page, like in the app.
-        const page = out.addPage([first.width, first.height]);
-        if (ink.length) page.drawImage(await out.embedPng(await inkPng(ink, first.width, first.height, images)), { x: 0, y: 0, width: first.width, height: first.height });
+        // Blank page: sized like in the app (as wide as the first page, portrait or landscape).
+        const { w, h } = blankSize({ w: first.width, h: first.height }, rec.blankOrient?.[key]);
+        const page = out.addPage([w, h]);
+        if (ink.length) page.drawImage(await out.embedPng(await inkPng(ink, w, h, images)), { x: 0, y: 0, width: w, height: h });
         continue;
       }
       const vp = (await view.getPage(key)).getViewport({ scale: 1 });

@@ -6,6 +6,7 @@ import { inkVersion, onInkImages, paintStroke } from '../inkImages';
 import { isNative, LectureAudio } from '../native';
 import { nativeStrokes } from '../gestures';
 import { pinchCount, pinching, startInertia, stopInertia } from '../gestures';
+import { useRepaint } from '../repaint';
 import { useStore } from '../store';
 
 /** Is (x, y) inside the polygon? (even-odd rule) */
@@ -44,6 +45,7 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
   const inkCanvas = useRef<HTMLCanvasElement>(null);
   const liveCanvas = useRef<HTMLCanvasElement>(null);
   const [visible, setVisible] = useState(false);
+  const repaint = useRepaint();
   const [flashBox, setFlashBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
 
   const tool = useStore((s) => s.tool);
@@ -71,7 +73,7 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
     const io = new IntersectionObserver(([e]) => setVisible(e.isIntersecting), { rootMargin: '100% 0px' });
     io.observe(el);
     return () => io.disconnect();
-  }, []);
+  }, [repaint]); // observing again reports the current state right away
 
   // Offscreen pages give their canvas memory back; iPad WebKit stutters (and drops canvases) when it runs low.
   useEffect(() => {
@@ -105,7 +107,13 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
       off.width = Math.floor(viewport.width);
       off.height = Math.floor(viewport.height);
       task = page.render({ canvas: off, viewport });
-      const ok = await task.promise.then(() => true, () => false);
+      const ok = await task.promise.then(
+        () => true,
+        (e) => {
+          if (!cancelled) console.warn('[page] render failed', pageNum, e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+          return false;
+        },
+      );
       const c = pdfCanvas.current;
       if (!ok || cancelled || !c) return;
       c.width = off.width;
@@ -117,7 +125,7 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
       cancelled = true;
       task?.cancel();
     };
-  }, [pdf, pageNum, scale, dpr, visible, width1, height1]);
+  }, [pdf, pageNum, scale, dpr, visible, width1, height1, repaint]);
 
   const shown = useMemo(() => {
     // Strokes being dragged are drawn on the live layer instead, at their new spot.
@@ -127,7 +135,7 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
   }, [strokes, replayT, playingRecId, dragging, selIds]);
 
   // Committed ink. A new stroke only adds to what is already drawn; anything else (erase, undo, zoom) redraws.
-  const drawn = useRef<{ strokes: Stroke[]; scale: number; v: number }>({ strokes: [], scale: 0, v: 0 });
+  const drawn = useRef<{ strokes: Stroke[]; scale: number; v: number; repaint?: number }>({ strokes: [], scale: 0, v: 0 });
   const [imagesV, setImagesV] = useState(inkVersion);
   useEffect(() => onInkImages(() => setImagesV(inkVersion())), []);
   // Layout effect: the finished stroke lands on the ink layer in the same frame the live layer is cleared.
@@ -141,7 +149,7 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
     const h = Math.floor(displayHeight * dpr);
     const ctx = c.getContext('2d')!;
     const prev = drawn.current;
-    const appended = c.width === w && c.height === h && prev.scale === scale && prev.v === imagesV &&
+    const appended = c.width === w && c.height === h && prev.scale === scale && prev.v === imagesV && prev.repaint === repaint &&
       shown.length >= prev.strokes.length && prev.strokes.every((s, i) => shown[i] === s);
     if (!appended) {
       if (c.width !== w || c.height !== h) {
@@ -158,8 +166,8 @@ export default function PageView({ pdf, pageNum, label, width1, height1, display
     for (const s of added) {
       if (nativeStrokes.delete(s.id)) LectureAudio.clearInkPreview().catch(() => {});
     }
-    drawn.current = { strokes: shown, scale, v: imagesV };
-  }, [shown, scale, displayWidth, displayHeight, dpr, visible, imagesV]);
+    drawn.current = { strokes: shown, scale, v: imagesV, repaint };
+  }, [shown, scale, displayWidth, displayHeight, dpr, visible, imagesV, repaint]);
 
   useEffect(() => {
     if (!visible) return;

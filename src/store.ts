@@ -1,6 +1,6 @@
 import { Directory, Filesystem } from '@capacitor/filesystem';
 import { create } from 'zustand';
-import { db, recordingBlob, uid, type Course, type LectureLang, type MemoryCard, type Question, type Recording, type Revision, type Segment, type Stroke, type Summary } from './db';
+import { db, recordingBlob, uid, type Course, type LectureLang, type MemoryCard, type Orientation, type Question, type Recording, type Revision, type Segment, type Stroke, type Summary } from './db';
 import { fmtTime } from './ink';
 import { engineProblem, loadSettings, makeMemoryCard, summarize, translateLines, type Glossary, type PageContext } from './llm';
 import { currentPdf, pageText } from './pdf';
@@ -116,7 +116,8 @@ interface State {
   importRecording: () => Promise<void>;
   setViewPage: (page: number) => void;
   setPageOrder: (order: number[]) => void;
-  addBlankPage: () => Promise<void>;
+  blankOrient: Record<number, Orientation>; // see Doc.blankOrient
+  addBlankPage: (orient: Orientation) => Promise<void>;
   deleteBlankPage: (key: number) => Promise<void>;
   /** Removes a recording with its audio, captions and summary; strokes written during it stay, untimed. */
   deleteRecording: (recId: string) => Promise<void>;
@@ -337,6 +338,7 @@ export const useStore = create<State>((set, get) => {
     cardBusy: [],
     viewPage: 1,
     pageOrder: [],
+    blankOrient: {},
     refining: null,
     refineError: null,
     summarizing: null,
@@ -346,7 +348,7 @@ export const useStore = create<State>((set, get) => {
     openDoc: async (id) => {
       if (get().activeRec) await get().stopRecording();
       audio.pause();
-      const reset = { selection: null, undoStack: [], redoStack: [], replayT: null, playingRecId: null, ask: null, partial: '', viewPage: 1, pageOrder: [] };
+      const reset = { selection: null, undoStack: [], redoStack: [], replayT: null, playingRecId: null, ask: null, partial: '', viewPage: 1, pageOrder: [], blankOrient: {} };
       if (!id) {
         set({ docId: null, strokes: [], recordings: [], segments: [], questions: [], summaries: [], revisions: [], course: null, ...reset });
         return;
@@ -589,14 +591,15 @@ export const useStore = create<State>((set, get) => {
     setPageOrder: (pageOrder) => set({ pageOrder }),
 
     // A blank page goes right after the page on screen.
-    addBlankPage: async () => {
+    addBlankPage: async (orient) => {
       const { docId, pageOrder, viewPage } = get();
       if (!docId || !pageOrder.length) return;
       const key = Math.min(0, ...pageOrder) - 1;
       const order = [...pageOrder];
       order.splice(order.indexOf(viewPage) + 1, 0, key);
-      set({ pageOrder: order });
-      await db.docs.update(docId, { pages: order });
+      const blankOrient = { ...get().blankOrient, [key]: orient };
+      set({ pageOrder: order, blankOrient });
+      await db.docs.update(docId, { pages: order, blankOrient });
       get().goToPage(key);
     },
 
