@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { sharePdf } from '../exportPdf';
 import { fmtTime } from '../ink';
 import { useStore, type Tool } from '../store';
 import AiSettings from './AiSettings';
@@ -70,6 +71,39 @@ function RecButton() {
   );
 }
 
+/** Send the PDF out of the app: with the handwriting on it, or the file as it was imported. */
+function ShareButton() {
+  const docId = useStore((s) => s.docId);
+  const [open, setOpen] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
+  const run = async (ink: boolean) => {
+    if (!docId) return;
+    setOpen(false);
+    setProgress('준비 중…');
+    try {
+      await sharePdf(docId, ink, (done, total) => setProgress(`${done}/${total}쪽`));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/cancel/i.test(msg)) alert(`PDF를 내보내지 못했어요\n\n${msg}`);
+    } finally {
+      setProgress(null);
+    }
+  };
+  return (
+    <div className="share-wrap">
+      <button disabled={Boolean(progress)} onClick={() => setOpen(!open)} title="PDF 공유·내보내기">
+        {progress ? `⬆︎ ${progress}` : '⬆︎ 공유'}
+      </button>
+      {open && (
+        <div className="share-menu">
+          <button onClick={() => run(true)}>필기 포함 PDF</button>
+          <button onClick={() => run(false)}>원본 PDF</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Toolbar({ onBack, title }: { onBack: () => void; title: string }) {
   const { tool, color, size, zoom, fingerDraw, showOrder, overview, undoStack, redoStack, eraserSize } = useStore();
   const { setTool, setColor, setSize, setZoom, setFingerDraw, setShowOrder, setOverview, setEraserSize, undo, redo } = useStore();
@@ -130,6 +164,7 @@ export default function Toolbar({ onBack, title }: { onBack: () => void; title: 
         ①② 순서
       </button>
       <div className="grow" />
+      <ShareButton />
       <button onClick={() => setShowSettings(true)} title="AI 번역·요약 설정">✨ AI</button>
       <LangToggle />
       <RecButton />

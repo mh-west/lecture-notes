@@ -23,6 +23,7 @@
     "dexie": "^4.4.6",
     "dexie-react-hooks": "^4.4.0",
     "katex": "^0.16.22",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.4.299",
     "perfect-freehand": "^1.2.3",
     "react": "^19.3.1",

@@ -280,3 +280,10 @@ button.course-title b { font-size: 19px; }
 .ideas-list li.done .idea-text { text-decoration: line-through; color: var(--muted); }
 .ideas-list .idea-text { flex: 1; white-space: pre-wrap; -webkit-user-select: text; user-select: text; }
 .small-btn { min-height: 28px; padding: 2px 8px; }
+
+.share-wrap { position: relative; }
+.share-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; display: flex; flex-direction: column; gap: 2px;
+  background: #fff; border: 1px solid var(--line, #e5e7eb); border-radius: 10px; padding: 4px; box-shadow: 0 6px 20px rgba(0,0,0,.12);
+}
+.share-menu button { white-space: nowrap; text-align: left; }
