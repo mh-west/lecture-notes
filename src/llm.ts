@@ -19,9 +19,10 @@ export interface LlmSettings {
   claudeKey: string;
   claudeModel: string;
   refine: boolean; // refine captions automatically while recording
+  whisper: boolean; // accurate captions with Whisper while recording (when its model is on the iPad)
 }
 
-const DEFAULTS: LlmSettings = { engine: 'apple', claudeKey: '', claudeModel: 'claude-opus-5-5', refine: true };
+const DEFAULTS: LlmSettings = { engine: 'apple', claudeKey: '', claudeModel: 'claude-opus-5-5', refine: true, whisper: true };
 const KEY = 'llmSettings';
 
 export function loadSettings(): LlmSettings {
@@ -62,6 +63,7 @@ The captions are speech-recognition output: they contain filler words, false sta
 - Translate the meaning, not word for word, in concise lecture-note Korean.
 - Technical terms: decide like a Korean graduate student taking notes. Keep a term in English when students normally use the English word or the Korean is awkward or ambiguous (e.g. martingale, Brownian motion, filtration, stopping time, quadratic variation, Itô integral). Use Korean for everyday mathematical words (적분, 기댓값, 수렴, 증명, 정리 …). Use the same choice for a term throughout.
 - Keep formulas and symbols as they are.
+- Also give the English the professor most likely said: fix misheard words using the slides, the key terms and the flow of the argument (e.g. "city quality" → "Chebyshev inequality", "greater equity" → "greater or equal"), and drop fillers. Change only what is clearly misheard; keep the professor's wording otherwise.
 - Return one entry for every caption line, using its number.`;
 
 /** The course the lecture belongs to and its key terms (the folder's own plus those found in its PDFs). */
@@ -106,25 +108,42 @@ const APPLE_TRANSLATE_INSTRUCTIONS = `너는 영어 수학 강의 자막을 한�
 - 전문 용어는 한국 대학원생이 노트할 때처럼 판단한다: martingale, Brownian motion, filtration, stopping time처럼 보통 영어로 쓰는 용어는 영어 그대로 두고, 적분·기댓값·수렴 같은 일반 수학 용어는 한국어로 쓴다.
 - 입력 줄마다 번호와 함께 하나씩 돌려준다.`;
 
-/** Natural Korean for each caption line; '' for lines that were only filler. */
-export async function translateLines(lines: string[], ctx: PageContext | null, before: string[], g?: Glossary): Promise<string[]> {
+/**
+ * Natural Korean for each caption line ('' for lines that were only filler) and, with Claude, the English
+ * corrected for misheard words (undefined when the engine doesn't do that).
+ * `live`: while recording, Claude answers with a faster model than Opus so captions keep up.
+ */
+export async function translateLines(
+  lines: string[], ctx: PageContext | null, before: string[], g?: Glossary, live = false,
+): Promise<{ ko: string[]; en: (string | undefined)[] }> {
   const s = loadSettings();
   if (s.engine === 'apple') {
     const prompt = translatePrompt(lines, ctx, before.slice(-2), false, g);
     const { lines: out } = await LectureAudio.llmTranslateLines({ instructions: APPLE_TRANSLATE_INSTRUCTIONS, prompt, count: lines.length });
-    return out;
+    return { ko: out, en: [] };
   }
   const text = await claude(
-    `${TRANSLATE_INSTRUCTIONS}\nOutput format: one line per caption, "<number>: <Korean>" (nothing after the colon for filler-only lines). No other text.`,
+    `${TRANSLATE_INSTRUCTIONS}\nOutput format: one line per caption, "<number>: <corrected English> ||| <Korean>" (leave both parts empty for filler-only lines, i.e. "<number>: |||"). No other text.`,
     translatePrompt(lines, ctx, before, true, g),
     'low',
+    undefined,
+    live && s.claudeModel === 'claude-opus-5-5' ? 'claude-sonnet-5-5' : undefined,
   );
-  const out = Array<string>(lines.length).fill('');
+  const ko = Array<string>(lines.length).fill('');
+  const en = Array<string | undefined>(lines.length).fill(undefined);
   for (const row of text.split('\n')) {
     const m = row.match(/^\s*(\d+)\s*[:.]\s?(.*)$/);
-    if (m && +m[1] >= 1 && +m[1] <= lines.length) out[+m[1] - 1] = m[2].trim();
+    if (!m || +m[1] < 1 || +m[1] > lines.length) continue;
+    const i = +m[1] - 1;
+    const sep = m[2].indexOf('|||');
+    if (sep < 0) {
+      ko[i] = m[2].trim();
+    } else {
+      en[i] = m[2].slice(0, sep).trim();
+      ko[i] = m[2].slice(sep + 3).trim();
+    }
   }
-  return out;
+  return { ko, en };
 }
 
 const SUMMARY_INSTRUCTIONS = `You write Korean lecture notes for a student who attended a university mathematics lecture.
@@ -238,14 +257,16 @@ async function claude(
   user: string,
   effort: 'low' | 'medium',
   image?: { mediaType: 'image/png' | 'image/jpeg'; data: string },
+  modelOverride?: string,
 ): Promise<string> {
   const s = loadSettings();
+  const model = modelOverride ?? s.claudeModel;
   const client = new Anthropic({ apiKey: s.claudeKey.trim(), dangerouslyAllowBrowser: true });
   // Server-side fallback re-runs a declined request on another model; Haiku has none.
-  const fallback = s.claudeModel === 'claude-haiku-5-5' ? {} : { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const };
+  const fallback = model === 'claude-haiku-5-5' ? {} : { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const };
   try {
     const res = await client.beta.messages.create({
-      model: s.claudeModel,
+      model,
       max_tokens: 16000,
       system,
       output_config: { effort },

@@ -7,6 +7,13 @@ export interface TranscriptEvent {
   final: boolean;
 }
 
+/** About 30 s of the recording transcribed by Whisper; replaces the live lines in [start, end). */
+export interface WhisperChunk {
+  start: number;
+  end: number;
+  lines: { start: number; end: number; text: string }[];
+}
+
 export type GesturePhase = 'began' | 'changed' | 'ended';
 
 /** A finished PencilKit stroke, in web-view (CSS px) coordinates. */
@@ -20,7 +27,10 @@ export interface InkStrokeEvent {
 
 interface LectureAudioPlugin {
   prepare(): Promise<{ mic: boolean; speech: boolean; engine: 'speechanalyzer' | 'sfspeech' }>;
-  start(opts: { vocabulary: string[]; locale: string }): Promise<{ engine: string; locale: string }>;
+  start(opts: { vocabulary: string[]; locale: string; whisper?: boolean }): Promise<{ engine: string; locale: string; whisper?: boolean }>;
+  whisperStatus(): Promise<{ installed: boolean; downloading: boolean; size: number }>;
+  whisperDownload(): Promise<void>;
+  whisperDelete(): Promise<void>;
   stop(): Promise<{ uri: string; path: string }>;
   translate(opts: { text: string }): Promise<{ text: string }>;
   pickAudio(): Promise<{ uri: string; path: string; name: string; duration: number; createdAt: number }>;
@@ -41,6 +51,9 @@ interface LectureAudioPlugin {
   addListener(event: 'fingerPinch', fn: (e: { state: GesturePhase; scale: number; x: number; y: number }) => void): Promise<PluginListenerHandle>;
   addListener(event: 'fingerTap', fn: (e: { x: number; y: number }) => void): Promise<PluginListenerHandle>;
   addListener(event: 'error', fn: (e: { message: string }) => void): Promise<PluginListenerHandle>;
+  addListener(event: 'whisperChunk', fn: (e: WhisperChunk) => void): Promise<PluginListenerHandle>;
+  addListener(event: 'whisperDone', fn: () => void): Promise<PluginListenerHandle>;
+  addListener(event: 'whisperProgress', fn: (e: { received: number; total: number }) => void): Promise<PluginListenerHandle>;
 }
 
 export const isNative = Capacitor.isNativePlatform();

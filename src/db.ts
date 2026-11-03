@@ -70,6 +70,7 @@ export interface Recording {
   name?: string; // imported file name
   pageLog?: { t: number; page: number }[]; // page on screen from time t (seconds) onwards
   lang?: LectureLang;
+  whisper?: boolean; // accurate captions (Whisper) replaced the live lines while recording
 }
 
 export type LectureLang = 'en-US' | 'ko-KR';
@@ -90,6 +91,8 @@ export interface Segment {
   text: string;
   ko?: string; // quick line-by-line machine translation
   ko2?: string; // language-model translation using slide context; '' = filler only
+  en2?: string; // the English with misheard words fixed by the language model (Claude only)
+  src?: 'whisper'; // recognised by Whisper (accurate captions) rather than the live recogniser
 }
 
 /** A second, careful pass over a finished recording: the whole audio file recognised again with the

@@ -416,7 +416,7 @@ function Transcript() {
               {fmtTime(l.start)}
             </button>
             <div className="line-body">
-              <div className="en">{l.text}</div>
+              <div className="en" title={l.en2 ? `인식된 원문: ${l.text}` : undefined}>{l.en2 ?? l.text}</div>
               {showKo && !korean &&
                 (l.ko2 !== undefined
                   ? l.ko2 && <div className="ko ai">{l.ko2}</div>

@@ -1,10 +1,12 @@
 import AVFoundation
 import Capacitor
+import CryptoKit
 import Foundation
 import Speech
 import SwiftUI
 import UIKit
 import Vision
+import whisper
 import PencilKit
 import UIKit.UIGestureRecognizerSubclass
 import UniformTypeIdentifiers
@@ -36,14 +38,47 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "clearInkPreview", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "renderInk", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "ocrImage", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "whisperStatus", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "whisperDownload", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "whisperDelete", returnType: CAPPluginReturnPromise),
     ]
 
     private let engine = AVAudioEngine()
     private var file: AVAudioFile?
     private var fileURL: URL?
     private var transcriber: LiveTranscriber?
+    private var whisperLive: WhisperLive?
+    private var whisperDownloader: WhisperDownloader?
     private var recording = false
     private var starting = false // a start() is still setting up; a second tap must not start twice
+
+    // MARK: accurate captions (Whisper)
+
+    @objc func whisperStatus(_ call: CAPPluginCall) {
+        call.resolve(["installed": WhisperModel.installed, "downloading": whisperDownloader != nil, "size": WhisperModel.size])
+    }
+
+    /// Downloads the model (~570 MB), reporting `whisperProgress` { received, total }. Resolves when ready.
+    @objc func whisperDownload(_ call: CAPPluginCall) {
+        if WhisperModel.installed { return call.resolve() }
+        guard whisperDownloader == nil else { return call.reject("이미 받는 중이에요") }
+        let d = WhisperDownloader(
+            progress: { [weak self] got, total in self?.notifyListeners("whisperProgress", data: ["received": got, "total": total]) },
+            done: { [weak self] error in
+                DispatchQueue.main.async {
+                    guard let self, self.whisperDownloader != nil else { return }
+                    self.whisperDownloader = nil
+                    if let error { call.reject("모델을 받지 못했어요: \(error.localizedDescription)") } else { call.resolve() }
+                }
+            })
+        whisperDownloader = d
+        d.start()
+    }
+
+    @objc func whisperDelete(_ call: CAPPluginCall) {
+        try? FileManager.default.removeItem(at: WhisperModel.dir)
+        call.resolve()
+    }
 
     // MARK: text recognition (scanned PDFs)
 
@@ -240,10 +275,19 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 self.file = audioFile
                 self.fileURL = url
                 self.transcriber = t
+                // Accurate captions: Whisper re-transcribes every ~30 s and replaces the live lines.
+                let useWhisper = (call.getBool("whisper") ?? false) && WhisperModel.installed
+                self.whisperLive = useWhisper ? WhisperLive(
+                    language: locale.language.languageCode?.identifier ?? "en",
+                    onChunk: { [weak self] start, end, lines in
+                        self?.notifyListeners("whisperChunk", data: ["start": start, "end": end, "lines": lines])
+                    },
+                    onError: onError) : nil
                 input.removeTap(onBus: 0) // a tap left behind would make installTap throw
                 input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
                     guard let self else { return }
-                    try? self.file?.write(from: buffer)
+                    try? self.file?.write(from: buffer) // the recording keeps the original sound
+                    self.whisperLive?.append(buffer)
                     self.transcriber?.append(buffer)
                 }
                 engine.prepare()
@@ -252,7 +296,7 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 starting = false
                 RecordingMarker.set(true) // tells scripts/ipad-install.sh not to reinstall mid-lecture
                 await MainActor.run { UIApplication.shared.isIdleTimerDisabled = true } // keep screen on in class
-                call.resolve(["engine": used, "locale": locale.identifier])
+                call.resolve(["engine": used, "locale": locale.identifier, "whisper": useWhisper])
                 // Transcription failing (e.g. model still downloading) must not stop the recording.
                 do {
                     try await t.start(vocabulary: vocabulary)
@@ -275,6 +319,9 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         RecordingMarker.set(false)
         let t = transcriber
         transcriber = nil
+        let w = whisperLive
+        whisperLive = nil
+        w?.finish { [weak self] in self?.notifyListeners("whisperDone", data: [:]) }
         file = nil // closing the file finalises the m4a
         fileURL = nil
         DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = false }
@@ -776,6 +823,8 @@ final class ModernTranscriber: LiveTranscriber {
     private var targetFormat: AVAudioFormat?
     private var converter: AVAudioConverter?
     private var resultsTask: Task<Void, Never>?
+    private let lock = NSLock()
+    private var dropped: Double = 0
 
     private let locale: Locale
 
@@ -806,12 +855,13 @@ final class ModernTranscriber: LiveTranscriber {
         let (stream, builder) = AsyncStream<AnalyzerInput>.makeStream()
         inputBuilder = builder
 
-        resultsTask = Task { [onResult, onError] in
+        resultsTask = Task { [onResult, onError, weak self] in
             do {
                 for try await result in transcriber.results {
                     let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
                     if text.isEmpty { continue }
-                    onResult(text, result.range.start.seconds, result.range.end.seconds, result.isFinal)
+                    let offset = self?.droppedSeconds ?? 0
+                    onResult(text, result.range.start.seconds + offset, result.range.end.seconds + offset, result.isFinal)
                 }
             } catch {
                 onError("자막 오류: \(error.localizedDescription)")
@@ -822,7 +872,14 @@ final class ModernTranscriber: LiveTranscriber {
     }
 
     func append(_ buffer: AVAudioPCMBuffer) {
-        guard let inputBuilder, let target = targetFormat else { return }
+        guard let inputBuilder, let target = targetFormat else {
+            // Audio before the model is ready isn't analysed; its length shifts the result times back
+            // onto the recording's clock.
+            lock.lock()
+            dropped += Double(buffer.frameLength) / buffer.format.sampleRate
+            lock.unlock()
+            return
+        }
         if buffer.format == target {
             inputBuilder.yield(AnalyzerInput(buffer: buffer))
             return
@@ -846,6 +903,12 @@ final class ModernTranscriber: LiveTranscriber {
         if error == nil, out.frameLength > 0 {
             inputBuilder.yield(AnalyzerInput(buffer: out))
         }
+    }
+
+    private var droppedSeconds: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return dropped
     }
 
     func stop() async {
@@ -957,5 +1020,249 @@ final class LegacyTranscriber: LiveTranscriber {
         await MainActor.run { rotateTimer?.invalidate() }
         takeRequest()?.endAudio()
         try? await Task.sleep(nanoseconds: 1_500_000_000) // let the last final result arrive
+    }
+}
+
+// MARK: - Whisper (accurate captions)
+
+/// The Whisper model for accurate captions: downloaded once into Application Support (not backed up).
+enum WhisperModel {
+    static let name = "ggml-large-v3-turbo-q5_0.bin"
+    static let url = URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin")!
+    static let sha256 = "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+    static let size: Int64 = 574_041_195
+    static var dir: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("whisper", isDirectory: true)
+    }
+    static var path: URL { dir.appendingPathComponent(name) }
+    static var installed: Bool {
+        ((try? FileManager.default.attributesOfItem(atPath: path.path))?[.size] as? NSNumber)?.int64Value == size
+    }
+
+    static func sha256(of url: URL) throws -> String {
+        let h = try FileHandle(forReadingFrom: url)
+        defer { try? h.close() }
+        var hasher = SHA256()
+        while let data = try h.read(upToCount: 8 << 20), !data.isEmpty { hasher.update(data: data) }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// Downloads the model with progress, checks it against its published SHA-256, then moves it in place.
+final class WhisperDownloader: NSObject, URLSessionDownloadDelegate {
+    private let progress: (Int64, Int64) -> Void
+    private let done: (Error?) -> Void
+    private var session: URLSession?
+    private var lastReport = Date.distantPast
+
+    init(progress: @escaping (Int64, Int64) -> Void, done: @escaping (Error?) -> Void) {
+        self.progress = progress
+        self.done = done
+    }
+
+    func start() {
+        let s = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        session = s
+        s.downloadTask(with: WhisperModel.url).resume()
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData _: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        guard Date().timeIntervalSince(lastReport) > 0.5 else { return }
+        lastReport = Date()
+        progress(totalBytesWritten, totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : WhisperModel.size)
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        do {
+            let fm = FileManager.default
+            try fm.createDirectory(at: WhisperModel.dir, withIntermediateDirectories: true)
+            // The temporary file disappears when this returns: move it first, then check it.
+            let tmp = WhisperModel.dir.appendingPathComponent("download.tmp")
+            try? fm.removeItem(at: tmp)
+            try fm.moveItem(at: location, to: tmp)
+            guard try WhisperModel.sha256(of: tmp) == WhisperModel.sha256 else {
+                try? fm.removeItem(at: tmp)
+                throw PluginError("받은 모델 파일이 올바르지 않아요. 다시 받아 주세요")
+            }
+            try? fm.removeItem(at: WhisperModel.path)
+            try fm.moveItem(at: tmp, to: WhisperModel.path)
+            var dirURL = WhisperModel.dir
+            var rv = URLResourceValues()
+            rv.isExcludedFromBackup = true
+            try? dirURL.setResourceValues(rv)
+            done(nil)
+        } catch {
+            done(error)
+        }
+        session.finishTasksAndInvalidate()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error { done(error) }
+        session.finishTasksAndInvalidate()
+    }
+}
+
+/// One loaded Whisper model (Metal on the GPU).
+final class WhisperContext {
+    private let ctx: OpaquePointer
+
+    init?(path: String) {
+        var p = whisper_context_default_params()
+        p.use_gpu = true
+        p.flash_attn = true
+        guard let c = whisper_init_from_file_with_params(path, p) else { return nil }
+        ctx = c
+    }
+
+    deinit { whisper_free(ctx) }
+
+    /// Segments (start, end in seconds within `samples`, text) of 16 kHz mono audio.
+    func transcribe(_ samples: [Float], language: String, prompt: String) -> [(Double, Double, String)] {
+        var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+        params.print_progress = false
+        params.print_realtime = false
+        params.print_special = false
+        params.print_timestamps = false
+        params.n_threads = 4
+        params.no_context = true
+        params.suppress_nst = true
+        let lang = strdup(language)
+        // The previous chunk's words as context (not a term list: hints made Whisper repeat itself).
+        let pr = prompt.isEmpty ? nil : strdup(prompt)
+        defer {
+            free(lang)
+            free(pr)
+        }
+        params.language = UnsafePointer(lang)
+        params.initial_prompt = UnsafePointer(pr)
+        let ok = samples.withUnsafeBufferPointer { whisper_full(ctx, params, $0.baseAddress, Int32($0.count)) }
+        guard ok == 0 else { return [] }
+        return (0..<whisper_full_n_segments(ctx)).compactMap { i in
+            guard let t = whisper_full_get_segment_text(ctx, i) else { return nil }
+            let text = String(cString: t).trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.isEmpty { return nil }
+            // Whisper's own estimate that this stretch is not speech: what it writes there is invented.
+            if whisper_full_get_segment_no_speech_prob(ctx, i) > 0.6 { return nil }
+            return (Double(whisper_full_get_segment_t0(ctx, i)) / 100, Double(whisper_full_get_segment_t1(ctx, i)) / 100, text)
+        }
+    }
+}
+
+/// Accurate captions while recording: the microphone audio is cut into ~30 s chunks at a quiet moment
+/// (so words aren't split) and each chunk is transcribed by Whisper in the background. Times are seconds
+/// since the recording started, the same clock as the audio file.
+final class WhisperLive {
+    private let queue = DispatchQueue(label: "whisper", qos: .userInitiated)
+    private let language: String
+    private let onChunk: (Double, Double, [[String: Any]]) -> Void
+    private let onError: (String) -> Void
+    private var ctx: WhisperContext?
+    private var converter: AVAudioConverter?
+    private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+    private let lock = NSLock()
+    private var pending: [Float] = []
+    private var pendingStart: Double = 0
+    private var prompt = ""
+    private static let rate = 16000
+
+    init(language: String, onChunk: @escaping (Double, Double, [[String: Any]]) -> Void, onError: @escaping (String) -> Void) {
+        self.language = language
+        self.onChunk = onChunk
+        self.onError = onError
+        queue.async { [self] in
+            ctx = WhisperContext(path: WhisperModel.path.path)
+            if ctx == nil { onError("정확한 자막(Whisper) 모델을 열지 못했어요") }
+        }
+    }
+
+    /// Called from the microphone tap.
+    func append(_ buffer: AVAudioPCMBuffer) {
+        guard let samples = resample(buffer) else { return }
+        lock.lock()
+        pending += samples
+        var chunk: [Float]?
+        var start = 0.0
+        if pending.count >= 30 * Self.rate {
+            let cut = quietestCut(from: 20 * Self.rate, to: 30 * Self.rate)
+            chunk = Array(pending[0..<cut])
+            start = pendingStart
+            pending.removeFirst(cut)
+            pendingStart += Double(cut) / Double(Self.rate)
+        }
+        lock.unlock()
+        if let chunk { queue.async { [self] in run(chunk, start: start) } }
+    }
+
+    /// Transcribes what is left after the recording stops, then lets the model go.
+    func finish(_ done: @escaping () -> Void) {
+        lock.lock()
+        let rest = pending
+        let start = pendingStart
+        pending = []
+        lock.unlock()
+        queue.async { [self] in
+            if rest.count > Self.rate { run(rest, start: start) }
+            ctx = nil
+            done()
+        }
+    }
+
+    private func run(_ chunk: [Float], start: Double) {
+        guard let ctx else { return }
+        let duration = Double(chunk.count) / Double(Self.rate)
+        var sum: Float = 0
+        for s in chunk { sum += s * s }
+        // A silent chunk: Whisper would invent words ("Thank you."); report it as empty.
+        guard (sum / Float(chunk.count)).squareRoot() > 0.0015 else {
+            onChunk(start, start + duration, [])
+            return
+        }
+        var segs = ctx.transcribe(chunk, language: language, prompt: prompt)
+        // Near-silence (room noise only) makes Whisper write a stock phrase for the whole chunk.
+        let stock: Set<String> = ["thank you.", "thank you", "thanks for watching!", "thank you for watching.", "you", "bye.", "감사합니다.", "시청해주셔서 감사합니다."]
+        if segs.count == 1, stock.contains(segs[0].2.lowercased()) { segs = [] }
+        let lines: [[String: Any]] = segs.map { ["start": start + $0.0, "end": start + min($0.1, duration), "text": $0.2] }
+        prompt = String(segs.map(\.2).joined(separator: " ").suffix(200))
+        onChunk(start, start + duration, lines)
+    }
+
+    /// Where to end a chunk: the start of the quietest 0.2 s between `from` and `to` samples.
+    private func quietestCut(from: Int, to: Int) -> Int {
+        let win = Self.rate / 5
+        var best = to
+        var bestE = Float.greatestFiniteMagnitude
+        var i = from
+        while i + win <= min(to, pending.count) {
+            var e: Float = 0
+            for j in i..<(i + win) { e += pending[j] * pending[j] }
+            if e < bestE {
+                bestE = e
+                best = i + win / 2
+            }
+            i += win / 2
+        }
+        return best
+    }
+
+    private func resample(_ buffer: AVAudioPCMBuffer) -> [Float]? {
+        if converter == nil { converter = AVAudioConverter(from: buffer.format, to: target) }
+        guard let converter else { return nil }
+        let ratio = target.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
+        guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
+        var consumed = false
+        var error: NSError?
+        converter.convert(to: out, error: &error) { _, status in
+            if consumed {
+                status.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            status.pointee = .haveData
+            return buffer
+        }
+        guard error == nil, let data = out.floatChannelData else { return nil }
+        return Array(UnsafeBufferPointer(start: data[0], count: Int(out.frameLength)))
     }
 }

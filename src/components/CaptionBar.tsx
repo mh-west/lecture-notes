@@ -13,8 +13,8 @@ export default function CaptionBar() {
   return (
     <div className="caption-bar">
       <div className="caption-text" onClick={() => setSideOpen(true)}>
-        {partial ? <div className="en partial">{partial}</div> : <div className="en">{last?.text}</div>}
-        {!partial && last?.ko && <div className="ko">{last.ko}</div>}
+        {partial ? <div className="en partial">{partial}</div> : <div className="en">{last?.en2 ?? last?.text}</div>}
+        {!partial && (last?.ko2 || last?.ko) && <div className={`ko ${last.ko2 ? 'ai' : ''}`}>{last.ko2 || last.ko}</div>}
       </div>
       <button onClick={() => setHidden(true)} aria-label="자막 숨기기">✕</button>
     </div>

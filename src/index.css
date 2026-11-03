@@ -288,3 +288,5 @@ button.course-title b { font-size: 19px; }
 .orient-shape { display: block; border: 2px solid var(--text); border-radius: 3px; background: #fff; }
 .orient-shape.portrait { width: 40px; height: 56px; }
 .orient-shape.landscape { width: 56px; height: 40px; margin: 8px 0; }
+.whisper-box { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin: 8px 0; }
+.whisper-box button { align-self: flex-start; }

@@ -32,6 +32,17 @@ if [[ -z $device ]]; then
   exit 0
 fi
 now=$(date +%s)
+# Never close the app in the middle of a lecture, not even with --force (the app keeps this marker
+# while recording).
+marker=$(mktemp -d)
+if xcrun devicectl device copy from --device "$device" --domain-type appDataContainer \
+    --domain-identifier "$APP_ID" --source Documents/.recording-active --destination "$marker/m" >/dev/null 2>&1 \
+    && (( now - $(<"$marker/m") < 4 * 3600 )); then
+  rm -rf "$marker"
+  log "a lecture is being recorded, trying again later"
+  exit 0
+fi
+rm -rf "$marker"
 if [[ ${1:-} != --force ]]; then
   if [[ -f $EXPIRES ]] && (( $(<"$EXPIRES") - now > RENEW_BEFORE )); then
     log "installed build is good until $(date -r $(<"$EXPIRES") '+%F %R'), nothing to do"
@@ -42,16 +53,6 @@ if [[ ${1:-} != --force ]]; then
     log "already renewed today, nothing to do"
     exit 0
   fi
-  # Never close the app in the middle of a lecture (the app keeps this marker while recording).
-  marker=$(mktemp -d)
-  if xcrun devicectl device copy from --device "$device" --domain-type appDataContainer \
-      --domain-identifier "$APP_ID" --source Documents/.recording-active --destination "$marker/m" >/dev/null 2>&1 \
-      && (( now - $(<"$marker/m") < 4 * 3600 )); then
-    rm -rf "$marker"
-    log "a lecture is being recorded, trying again later"
-    exit 0
-  fi
-  rm -rf "$marker"
   echo "$now" >"$ATTEMPT"
 fi
 
@@ -66,6 +67,7 @@ done
 
 log "installing on $device"
 cd "$REPO"
+./scripts/fetch-whisper.sh
 npm run sync >/dev/null
 xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
   -destination "id=$device" -derivedDataPath "$BUILD" -allowProvisioningUpdates clean build -quiet

@@ -4,7 +4,7 @@ import { db, recordingBlob, uid, type Course, type LectureLang, type MemoryCard,
 import { fmtTime } from './ink';
 import { engineProblem, loadSettings, makeMemoryCard, summarize, translateLines, type Glossary, type PageContext } from './llm';
 import { currentPdf, pageText } from './pdf';
-import { isNative, LectureAudio, nativeFileBlob, type TranscriptEvent } from './native';
+import { isNative, LectureAudio, nativeFileBlob, type TranscriptEvent, type WhisperChunk } from './native';
 import { startWebSpeech, webSpeechAvailable } from './transcribe-web';
 import { recognitionVocabulary } from './terms';
 
@@ -218,8 +218,55 @@ export const useStore = create<State>((set, get) => {
     return { course: course?.name, subject: course?.subject, terms: await recognitionVocabulary(docId, course, lang) };
   };
 
+  // Recordings whose Whisper chunks are still arriving: their live lines are about to be replaced, so
+  // only the Whisper lines are worth translating with the language model.
+  const whisperRunning = new Set<string>();
+  const whisperDone = new Map<string, () => void>(); // resolves stopRecording's wait for the last chunk
   const unrefined = (recId: string) =>
-    get().segments.filter((s) => s.recId === recId && s.ko2 === undefined && !inFlight.has(s.id)).sort((a, b) => a.start - b.start);
+    get().segments
+      .filter((s) => s.recId === recId && s.ko2 === undefined && !inFlight.has(s.id) && (s.src === 'whisper' || !whisperRunning.has(recId)))
+      .sort((a, b) => a.start - b.start);
+
+  /**
+   * Whisper sometimes returns a whole 30 s chunk as one line: split it into sentences (very short ones
+   * stay with the next) and share its time between them by length, so each caption reads and plays alone.
+   */
+  const sentences = (l: { start: number; end: number; text: string }) => {
+    const parts: string[] = [];
+    for (const p of l.text.split(/(?<=[.?!])\s+/)) {
+      if (parts.length && parts[parts.length - 1].split(' ').length < 4) parts[parts.length - 1] += ` ${p}`;
+      else parts.push(p);
+    }
+    if (parts.length < 2) return [l];
+    const total = parts.reduce((n, p) => n + p.length, 0);
+    let t = l.start;
+    return parts.map((p) => {
+      const end = t + ((l.end - l.start) * p.length) / total;
+      const out = { start: t, end, text: p };
+      t = end;
+      return out;
+    });
+  };
+
+  /** Whisper's lines for ~30 s of the lecture take the place of the live lines there. */
+  const onWhisperChunk = (rec: Recording) => (e: WhisperChunk) => {
+    const mid = (s: Segment) => (s.start + s.end) / 2;
+    const gone = get().segments.filter((s) => s.recId === rec.id && s.src !== 'whisper' && mid(s) >= e.start - 0.5 && mid(s) < e.end);
+    // Whisper marks non-speech as "[BLANK_AUDIO]", "(laughs)", "♪"…: not captions.
+    const speech = e.lines.filter((l) => !/^\s*(\[[^\]]*\]|\([^)]*\)|[♪*\s.]*)\s*$/.test(l.text));
+    const added: Segment[] = speech.flatMap(sentences).map((l) => ({ id: uid(), docId: rec.docId, recId: rec.id, start: l.start, end: l.end, text: l.text, src: 'whisper' }));
+    if (!gone.length && !added.length) return;
+    const goneIds = new Set(gone.map((s) => s.id));
+    set((st) => ({
+      segments: [...st.segments.filter((s) => !goneIds.has(s.id)), ...added].sort((a, b) => (a.recId === b.recId ? a.start - b.start : 0)),
+    }));
+    db.segments.bulkDelete([...goneIds]);
+    db.segments.bulkPut(added);
+    if (rec.lang !== 'ko-KR') {
+      for (const s of added) get().translateSegment(s.id); // quick on-device translation until the refined one lands
+      maybeRefine(rec.id, true);
+    }
+  };
 
   const refineBatch = async (recId: string, batch: Segment[]) => {
     const before = get().segments
@@ -228,23 +275,46 @@ export const useStore = create<State>((set, get) => {
       .slice(-4)
       .map((s) => s.text);
     const ctx = await pageContext(pageAt(recId, (batch[0].start + batch[batch.length - 1].end) / 2));
-    const out = await translateLines(batch.map((s) => s.text), ctx, before, await glossary());
-    const ko2 = new Map(batch.map((s, i) => [s.id, out[i] ?? '']));
-    set((st) => ({ segments: st.segments.map((s) => (ko2.has(s.id) ? { ...s, ko2: ko2.get(s.id) } : s)) }));
-    await Promise.all(batch.map((s) => db.segments.update(s.id, { ko2: ko2.get(s.id) })));
+    const live = get().activeRec?.id === recId;
+    const out = await translateLines(batch.map((s) => s.text), ctx, before, await glossary(), live);
+    const fix = new Map(batch.map((s, i) => {
+      const en = out.en[i];
+      return [s.id, { ko2: out.ko[i] ?? '', ...(en && en !== s.text ? { en2: en } : {}) }] as const;
+    }));
+    set((st) => ({ segments: st.segments.map((s) => (fix.has(s.id) ? { ...s, ...fix.get(s.id) } : s)) }));
+    await Promise.all(batch.map((s) => db.segments.update(s.id, fix.get(s.id)!)));
   };
 
-  // While recording: refine every few lines (or ~20s of speech), one request at a time.
+  // While recording: refine every couple of lines (or ~8 s of speech), one request at a time. A failed
+  // request (network, rate limit) pauses refinement for a moment instead of ending it for the lecture;
+  // only a problem that won't fix itself (no key, no credit) stops it.
+  let refinePausedUntil = 0;
   const maybeRefine = (recId: string, flush = false) => {
     if (!loadSettings().refine || get().refineError) return;
+    const wait = refinePausedUntil - Date.now();
+    if (wait > 0) {
+      setTimeout(() => maybeRefine(recId, flush), wait + 50);
+      return;
+    }
     const pending = unrefined(recId);
     if (!pending.length) return;
-    if (!flush && pending.length < 4 && pending[pending.length - 1].end - pending[0].start < 20) return;
-    const batch = pending.slice(0, 8);
+    if (!flush && pending.length < 2 && pending[pending.length - 1].end - pending[0].start < 8) return;
+    const batch = pending.slice(0, 6);
     batch.forEach((s) => inFlight.add(s.id));
     refineChain = refineChain
       .then(() => refineBatch(recId, batch))
-      .catch((e) => set({ refineError: errMsg(e), captionError: `다듬은 번역을 멈췄어요: ${errMsg(e)}` }))
+      .then(() => {
+        if (get().captionError?.startsWith('다듬은 번역')) set({ captionError: null });
+      })
+      .catch((e) => {
+        const msg = errMsg(e);
+        if (/키|크레딧|거절|API key|credit/i.test(msg)) {
+          set({ refineError: msg, captionError: `다듬은 번역을 멈췄어요: ${msg}` });
+        } else {
+          refinePausedUntil = Date.now() + 15_000;
+          set({ captionError: `다듬은 번역이 잠깐 실패해서 15초 뒤 다시 해요: ${msg}` });
+        }
+      })
       .finally(() => {
         batch.forEach((s) => inFlight.delete(s.id));
         maybeRefine(recId, flush);
@@ -298,7 +368,7 @@ export const useStore = create<State>((set, get) => {
     // Korean lectures need no translation.
     if (rec.lang !== 'ko-KR') {
       if (isNative) get().translateSegment(seg.id);
-      maybeRefine(rec.id);
+      if (!whisperRunning.has(rec.id)) maybeRefine(rec.id);
     }
   };
 
@@ -526,7 +596,26 @@ export const useStore = create<State>((set, get) => {
           h2.remove();
         };
         if (!perm.speech) set({ captionError: '음성 인식 권한이 없어 자막 없이 녹음해요 (설정 > 강의노트)' });
-        await LectureAudio.start({ vocabulary: await recognitionVocabulary(docId, get().course, lang), locale: lang });
+        const wantWhisper = loadSettings().whisper && (await LectureAudio.whisperStatus().catch(() => null))?.installed === true;
+        // Whisper keeps sending chunks for a little while after stop (the last ~30 s), so its listeners
+        // stay until it says it is done.
+        const w1 = wantWhisper ? await LectureAudio.addListener('whisperChunk', onWhisperChunk(rec)) : null;
+        const w2 = wantWhisper
+          ? await LectureAudio.addListener('whisperDone', () => {
+              w1?.remove();
+              w2?.remove();
+              whisperRunning.delete(rec.id);
+              whisperDone.get(rec.id)?.();
+            })
+          : null;
+        const res = await LectureAudio.start({ vocabulary: await recognitionVocabulary(docId, get().course, lang), locale: lang, whisper: wantWhisper });
+        if (res.whisper) {
+          rec.whisper = true;
+          whisperRunning.add(rec.id);
+        } else {
+          w1?.remove();
+          w2?.remove();
+        }
       } else {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true },
@@ -564,6 +653,20 @@ export const useStore = create<State>((set, get) => {
         await finishRecording(activeRec);
       } finally {
         stopping = false;
+      }
+      // The last ~30 s are still with Whisper: wait for them (at most two minutes) before the summary.
+      if (whisperRunning.has(activeRec.id)) {
+        set({ captionError: '정확한 자막 마무리 중… (마지막 30초)' });
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, 120_000);
+          whisperDone.set(activeRec.id, () => {
+            clearTimeout(t);
+            resolve();
+          });
+        });
+        whisperDone.delete(activeRec.id);
+        whisperRunning.delete(activeRec.id);
+        if (get().captionError?.startsWith('정확한 자막 마무리')) set({ captionError: null });
       }
       if (loadSettings().refine && !get().refineError) {
         // Finish the last lines (English lectures only), then write the lecture summary.
@@ -682,7 +785,8 @@ export const useStore = create<State>((set, get) => {
             const batch = lines.slice(i, i + 8);
             const ctx = await pageContext(pageAt(recId, (batch[0].start + batch[batch.length - 1].end) / 2));
             const out = await translateLines(batch.map((l) => l.text), ctx, lines.slice(Math.max(0, i - 4), i).map((l) => l.text), g);
-            batch.forEach((l, j) => (l.ko2 = out[j] ?? ''));
+            // The careful pass keeps its own recognised English (it is compared word by word with the live one).
+            batch.forEach((l, j) => (l.ko2 = out.ko[j] ?? ''));
           }
         }
         const revision: Revision = { recId, docId, createdAt: Date.now(), lines };
