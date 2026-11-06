@@ -158,6 +158,7 @@ let seq = 0;
 let refineChain: Promise<void> = Promise.resolve();
 const DAY = 24 * 60 * 60 * 1000;
 const REVIEW_GAPS = [1, 3, 7, 14, 30]; // days until the next review, by box
+let openCount = 0; // the latest openDoc: an earlier one still loading must not overwrite it
 let finished: Promise<void> = Promise.resolve(); // the last recording's wrap-up
 let stopping = false; // a stop is in progress; repeated taps are ignored
 let toolBeforeEraser: Tool = 'pen';
@@ -452,9 +453,12 @@ export const useStore = create<State>((set, get) => {
       if ((activeRec || finishing) && (!id || id === docId)) return;
       if (activeRec) await get().stopRecording();
       audio.pause();
-      const reset = { selection: null, undoStack: [], redoStack: [], replayT: null, playingRecId: null, ask: null, partial: '', viewPage: 1, pageOrder: [], blankOrient: {} };
+      // Right away, not after the loading below: the viewer may have the PDF's pages before the database
+      // answers, and clearing them then would leave a PDF with no pages on screen.
+      set({ selection: null, undoStack: [], redoStack: [], replayT: null, playingRecId: null, ask: null, partial: '', viewPage: 1, pageOrder: [], blankOrient: {} });
+      const opening = ++openCount;
       if (!id) {
-        set({ docId: null, strokes: [], recordings: [], segments: [], questions: [], summaries: [], revisions: [], course: null, ...reset });
+        set({ docId: null, strokes: [], recordings: [], segments: [], questions: [], summaries: [], revisions: [], course: null });
         return;
       }
       const [strokes, recordings, segments, questions, summaries, revisions] = await Promise.all([
@@ -469,7 +473,8 @@ export const useStore = create<State>((set, get) => {
       const course = (doc?.courseId && (await db.courses.get(doc.courseId))) || null;
       const saved = lsGet(`lang:${id}`);
       const lang: LectureLang = saved === 'ko-KR' || saved === 'en-US' ? saved : (course?.lang ?? 'en-US');
-      set({ docId: id, strokes, recordings, segments, questions, summaries, revisions, lang, course, ...reset });
+      if (opening !== openCount) return; // another PDF was opened in the meantime
+      set({ docId: id, strokes, recordings, segments, questions, summaries, revisions, lang, course });
       db.docs.update(id, { openedAt: Date.now() });
     },
 
