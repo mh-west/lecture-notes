@@ -585,7 +585,7 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
     private var inkColor = UIColor.black
     private var inkWidth: CGFloat = 2
     // Hold to straighten: the pencil staying put for a while at the end of a stroke makes it a straight line.
-    private static let holdSeconds = 2.0
+    private static let holdSeconds = 1.0
     private static let holdSlop: CGFloat = 5 // points of hand tremor that still count as staying put
     private var strokeStart: CGPoint?
     private var holdAnchor = CGPoint.zero
@@ -690,9 +690,6 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
         holdPreview.path = path.cgPath
     }
 
-    /// A stored stroke's thickness comes from its points' sizes alone (thickness = 2 × size - 4).
-    private static func pointSize(thickness: CGFloat) -> CGFloat { thickness / 2 + 2 }
-
     /// `stroke` as a straight line from its first to its last point.
     private static func straightened(_ stroke: PKStroke) -> PKStroke? {
         let pts = Array(stroke.path)
@@ -710,8 +707,8 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
     }
 
     /// The monoline tool stops at width 4. Zoomed in, the width asked for is more: the finished stroke gets it.
-    private static func resized(_ stroke: PKStroke, thickness: CGFloat) -> PKStroke {
-        let s = pointSize(thickness: thickness)
+    private static func resized(_ stroke: PKStroke, toolWidth: CGFloat) -> PKStroke {
+        let s = toolWidth + 2 // what the tool itself stores below its limit (seen on the iPad: 2.55 → 4.55)
         let pts = stroke.path.map { p in
             PKStrokePoint(location: p.location, timeOffset: p.timeOffset, size: CGSize(width: s, height: s), opacity: p.opacity,
                           force: p.force, azimuth: p.azimuth, altitude: p.altitude)
@@ -726,7 +723,6 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
         let strokes = canvasView.drawing.strokes
         defer { known = strokes.count }
         guard strokes.count > known, var stroke = strokes.last else { return }
-        print("[ink] tool width \(inkWidth) point size \(stroke.path.first?.size.width ?? 0)")
         var changed = false
         if straighten, let line = Self.straightened(stroke) {
             stroke = line
@@ -734,7 +730,7 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
         }
         straighten = false
         if !highlighter, inkWidth > 4 {
-            stroke = Self.resized(stroke, thickness: inkWidth)
+            stroke = Self.resized(stroke, toolWidth: inkWidth)
             changed = true
         }
         if changed {
