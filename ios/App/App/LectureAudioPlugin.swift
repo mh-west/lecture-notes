@@ -372,6 +372,22 @@ public class LectureAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let path = call.getString("path") else { return call.reject("path required") }
         let vocabulary = call.getArray("vocabulary", String.self) ?? []
         let locale = Locale(identifier: call.getString("locale") ?? "en-US")
+        if call.getBool("whisper") == true, WhisperModel.installed {
+            let language = locale.language.languageCode?.identifier ?? "en"
+            DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = true } // the GPU stops if the iPad locks
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                do {
+                    let segments = try WhisperFile.run(url: URL(fileURLWithPath: path), language: language) { t in
+                        self?.notifyListeners("fileProgress", data: ["seconds": t])
+                    }
+                    call.resolve(["segments": segments, "engine": "whisper"])
+                } catch {
+                    call.reject("자막을 만들지 못했어요: \(error.localizedDescription)")
+                }
+                DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = false }
+            }
+            return
+        }
         guard #available(iOS 26.0, *) else {
             return call.unavailable("녹음 파일 자막은 iPadOS 26 이상에서 지원돼요")
         }
@@ -1118,7 +1134,7 @@ final class WhisperContext {
     deinit { whisper_free(ctx) }
 
     /// Segments (start, end in seconds within `samples`, text) of 16 kHz mono audio.
-    func transcribe(_ samples: [Float], language: String, prompt: String) -> [(Double, Double, String)] {
+    func transcribe(_ samples: [Float], language: String, prompt: String) -> [(Double, Double, String)]? {
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
         params.print_progress = false
         params.print_realtime = false
@@ -1137,7 +1153,7 @@ final class WhisperContext {
         params.language = UnsafePointer(lang)
         params.initial_prompt = UnsafePointer(pr)
         let ok = samples.withUnsafeBufferPointer { whisper_full(ctx, params, $0.baseAddress, Int32($0.count)) }
-        guard ok == 0 else { return [] }
+        guard ok == 0 else { return nil }
         return (0..<whisper_full_n_segments(ctx)).compactMap { i in
             guard let t = whisper_full_get_segment_text(ctx, i) else { return nil }
             let text = String(cString: t).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1146,6 +1162,35 @@ final class WhisperContext {
             if whisper_full_get_segment_no_speech_prob(ctx, i) > 0.6 { return nil }
             return (Double(whisper_full_get_segment_t0(ctx, i)) / 100, Double(whisper_full_get_segment_t1(ctx, i)) / 100, text)
         }
+    }
+}
+
+/// Whisper over a whole recorded file, one chunk at a time so memory stays flat on a long lecture.
+enum WhisperFile {
+    static func run(url: URL, language: String, progress: @escaping (Double) -> Void) throws -> [[String: Any]] {
+        let file = try AVAudioFile(forReading: url)
+        var lines: [[String: Any]] = []
+        var problem: String?
+        let live = WhisperLive(language: language, waitForForeground: true, onChunk: { _, end, chunk in
+            lines += chunk
+            progress(end)
+        }, onError: { problem = $0 })
+        let frames = AVAudioFrameCount(file.processingFormat.sampleRate)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames) else {
+            throw PluginError("녹음 파일을 읽지 못했어요")
+        }
+        while file.framePosition < file.length {
+            try file.read(into: buffer, frameCount: frames)
+            if buffer.frameLength == 0 { break }
+            live.append(buffer)
+            live.drain()
+            if let problem { throw PluginError(problem) }
+        }
+        let done = DispatchSemaphore(value: 0)
+        live.finish { done.signal() }
+        done.wait()
+        if let problem { throw PluginError(problem) }
+        return lines
     }
 }
 
@@ -1165,9 +1210,13 @@ final class WhisperLive {
     private var pendingStart: Double = 0
     private var prompt = ""
     private static let rate = 16000
+    private let waitForForeground: Bool
 
-    init(language: String, onChunk: @escaping (Double, Double, [[String: Any]]) -> Void, onError: @escaping (String) -> Void) {
+    /// `waitForForeground`: iPadOS allows no GPU work in the background. A file pass waits to come back;
+    /// a live recording skips that chunk, so its live lines simply stay.
+    init(language: String, waitForForeground: Bool = false, onChunk: @escaping (Double, Double, [[String: Any]]) -> Void, onError: @escaping (String) -> Void) {
         self.language = language
+        self.waitForForeground = waitForForeground
         self.onChunk = onChunk
         self.onError = onError
         queue.async { [self] in
@@ -1194,6 +1243,15 @@ final class WhisperLive {
         if let chunk { queue.async { [self] in run(chunk, start: start) } }
     }
 
+    /// Blocks until everything handed over so far has been transcribed.
+    func drain() {
+        queue.sync {}
+    }
+
+    private func appActive() -> Bool {
+        DispatchQueue.main.sync { UIApplication.shared.applicationState != .background }
+    }
+
     /// Transcribes what is left after the recording stops, then lets the model go.
     func finish(_ done: @escaping () -> Void) {
         lock.lock()
@@ -1218,7 +1276,20 @@ final class WhisperLive {
             onChunk(start, start + duration, [])
             return
         }
-        var segs = ctx.transcribe(chunk, language: language, prompt: prompt)
+        if waitForForeground {
+            while !appActive() { Thread.sleep(forTimeInterval: 1) }
+        } else if !appActive() {
+            return
+        }
+        var result = ctx.transcribe(chunk, language: language, prompt: prompt)
+        if result == nil, waitForForeground { // the app left mid-chunk: once more when it is back
+            while !appActive() { Thread.sleep(forTimeInterval: 1) }
+            result = ctx.transcribe(chunk, language: language, prompt: prompt)
+        }
+        guard var segs = result else {
+            if waitForForeground { onError("이 구간을 인식하지 못했어요") }
+            return
+        }
         // Near-silence (room noise only) makes Whisper write a stock phrase for the whole chunk.
         let stock: Set<String> = ["thank you.", "thank you", "thanks for watching!", "thank you for watching.", "you", "bye.", "감사합니다.", "시청해주셔서 감사합니다."]
         if segs.count == 1, stock.contains(segs[0].2.lowercased()) { segs = [] }

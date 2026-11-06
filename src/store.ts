@@ -248,13 +248,15 @@ export const useStore = create<State>((set, get) => {
     });
   };
 
+  /** Captions from Whisper's output. It marks non-speech as "[BLANK_AUDIO]", "(laughs)", "♪"…: not captions. */
+  const whisperLines = (lines: { start: number; end: number; text: string }[]) =>
+    lines.filter((l) => !/^\s*(\[[^\]]*\]|\([^)]*\)|[♪*\s.]*)\s*$/.test(l.text)).flatMap(sentences);
+
   /** Whisper's lines for ~30 s of the lecture take the place of the live lines there. */
   const onWhisperChunk = (rec: Recording) => (e: WhisperChunk) => {
     const mid = (s: Segment) => (s.start + s.end) / 2;
     const gone = get().segments.filter((s) => s.recId === rec.id && s.src !== 'whisper' && mid(s) >= e.start - 0.5 && mid(s) < e.end);
-    // Whisper marks non-speech as "[BLANK_AUDIO]", "(laughs)", "♪"…: not captions.
-    const speech = e.lines.filter((l) => !/^\s*(\[[^\]]*\]|\([^)]*\)|[♪*\s.]*)\s*$/.test(l.text));
-    const added: Segment[] = speech.flatMap(sentences).map((l) => ({ id: uid(), docId: rec.docId, recId: rec.id, start: l.start, end: l.end, text: l.text, src: 'whisper' }));
+    const added: Segment[] = whisperLines(e.lines).map((l) => ({ id: uid(), docId: rec.docId, recId: rec.id, start: l.start, end: l.end, text: l.text, src: 'whisper' }));
     if (!gone.length && !added.length) return;
     const goneIds = new Set(gone.map((s) => s.id));
     set((st) => ({
@@ -755,6 +757,8 @@ export const useStore = create<State>((set, get) => {
       const { docId } = get();
       const rec = get().recordings.find((r) => r.id === recId);
       if (!docId || !rec || !isNative || get().revising || get().importing || get().activeRec?.id === recId) return;
+      // Whisper needs the iPad's GPU and memory to itself: not next to a lecture being recorded.
+      if (get().activeRec) return void set({ captionError: '녹음이 끝난 뒤에 정밀 다시 듣기를 할 수 있어요' });
       const korean = rec.lang === 'ko-KR';
       const lang = rec.lang ?? get().lang;
       if (!korean) {
@@ -762,7 +766,9 @@ export const useStore = create<State>((set, get) => {
         if (problem) return void set({ captionError: `정밀 번역을 할 수 없어요: ${problem}` });
       }
       const step = (msg: string) => set({ revising: { recId, msg } });
-      step('녹음 파일 다시 듣는 중…');
+      const whisper = (await LectureAudio.whisperStatus().catch(() => null))?.installed === true;
+      const listening = whisper ? 'Whisper로 다시 듣는 중 (앱을 켜 두세요)…' : '녹음 파일 다시 듣는 중…';
+      step(listening);
       const { uri } = await Filesystem.writeFile({
         path: `revise-${recId}.m4a`,
         data: await blobBase64(await recordingBlob(rec)),
@@ -770,14 +776,15 @@ export const useStore = create<State>((set, get) => {
       });
       const duration = rec.endedAt ? (rec.endedAt - rec.startedAt) / 1000 : 0;
       const h = await LectureAudio.addListener('fileProgress', (e) =>
-        step(`녹음 파일 다시 듣는 중… ${duration ? Math.min(99, Math.round((e.seconds / duration) * 100)) : 0}%`),
+        step(`${listening} ${duration ? Math.min(99, Math.round((e.seconds / duration) * 100)) : 0}%`),
       );
       try {
-        // Whole-file recognition sees every sentence to the end (no live guessing) and gets the course terms.
+        // Whisper when its model is on the iPad (far fewer misheard words); otherwise Apple's whole-file
+        // recognition, which sees every sentence to the end and gets the course terms.
         const vocabulary = await recognitionVocabulary(docId, get().course, lang);
-        const { segments } = await LectureAudio.transcribeFile({ path: decodeURIComponent(new URL(uri).pathname), vocabulary, locale: lang });
+        const { segments } = await LectureAudio.transcribeFile({ path: decodeURIComponent(new URL(uri).pathname), vocabulary, locale: lang, whisper });
         h.remove();
-        const lines: Revision['lines'] = segments.map((x) => ({ start: x.start, end: x.end, text: x.text }));
+        const lines: Revision['lines'] = (whisper ? whisperLines(segments) : segments).map((x) => ({ start: x.start, end: x.end, text: x.text }));
         if (!korean) {
           const g = await glossary();
           for (let i = 0; i < lines.length; i += 8) {
@@ -785,8 +792,10 @@ export const useStore = create<State>((set, get) => {
             const batch = lines.slice(i, i + 8);
             const ctx = await pageContext(pageAt(recId, (batch[0].start + batch[batch.length - 1].end) / 2));
             const out = await translateLines(batch.map((l) => l.text), ctx, lines.slice(Math.max(0, i - 4), i).map((l) => l.text), g);
-            // The careful pass keeps its own recognised English (it is compared word by word with the live one).
-            batch.forEach((l, j) => (l.ko2 = out.ko[j] ?? ''));
+            batch.forEach((l, j) => {
+              l.ko2 = out.ko[j] ?? '';
+              l.text = out.en[j] || l.text; // misheard words fixed with the slides and course terms
+            });
           }
         }
         const revision: Revision = { recId, docId, createdAt: Date.now(), lines };
