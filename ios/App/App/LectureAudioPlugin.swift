@@ -587,6 +587,7 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
     // Hold to straighten: the pencil staying put for a while at the end of a stroke makes it a straight line.
     private static let holdSeconds = 1.0
     private static let holdSlop: CGFloat = 5 // points of hand tremor that still count as staying put
+    private static let liftSlop: CGFloat = 30
     private var strokeStart: CGPoint?
     private var holdAnchor = CGPoint.zero
     private var holdWork: DispatchWorkItem?
@@ -651,9 +652,12 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
         if let host { container.frame = area.offsetBy(dx: host.frame.minX, dy: host.frame.minY) }
         inkColor = color
         inkWidth = width
-        // Monoline: the same width whatever the pressure or speed, like a ballpoint.
-        canvas.tool = PKInkingTool(highlighter ? .marker : .monoline, color: color, width: highlighter ? width * 4 : width)
+        // Monoline: the same width whatever the pressure or speed, like a ballpoint. It draws twice as
+        // thick as its width setting.
+        canvas.tool = PKInkingTool(highlighter ? .marker : .monoline, color: color, width: highlighter ? width * 4 : penToolWidth)
     }
+
+    private var penToolWidth: CGFloat { inkWidth / 2 }
 
     // MARK: hold to straighten
 
@@ -664,7 +668,9 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
             armHold()
             return
         }
-        guard hypot(p.x - holdAnchor.x, p.y - holdAnchor.y) > Self.holdSlop else { return }
+        // After the hold has registered, only really drawing on cancels it: the tip shifts a little as
+        // the pencil lifts, and that must not undo the straight line.
+        guard hypot(p.x - holdAnchor.x, p.y - holdAnchor.y) > (straighten ? Self.liftSlop : Self.holdSlop) else { return }
         holdAnchor = p
         straighten = false
         holdPreview.path = nil
@@ -690,10 +696,12 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
         holdPreview.path = path.cgPath
     }
 
-    /// `stroke` as a straight line from its first to its last point.
-    private static func straightened(_ stroke: PKStroke) -> PKStroke? {
+    /// `stroke` as a straight line from its first point to where the pencil was held.
+    private static func straightened(_ stroke: PKStroke, to end: CGPoint) -> PKStroke? {
         let pts = Array(stroke.path)
-        guard let a = pts.first, let b = pts.last else { return nil }
+        guard let a = pts.first, let last = pts.last else { return nil }
+        let b = PKStrokePoint(location: end, timeOffset: last.timeOffset, size: last.size, opacity: last.opacity,
+                              force: last.force, azimuth: last.azimuth, altitude: last.altitude)
         let middle = pts[pts.count / 2]
         let n = max(2, Int(hypot(b.location.x - a.location.x, b.location.y - a.location.y) / 8))
         let line = (0...n).map { i -> PKStrokePoint in
@@ -724,13 +732,13 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
         defer { known = strokes.count }
         guard strokes.count > known, var stroke = strokes.last else { return }
         var changed = false
-        if straighten, let line = Self.straightened(stroke) {
+        if straighten, let line = Self.straightened(stroke, to: holdAnchor) {
             stroke = line
             changed = true
         }
         straighten = false
-        if !highlighter, inkWidth > 4 {
-            stroke = Self.resized(stroke, toolWidth: inkWidth)
+        if !highlighter, penToolWidth > 4 {
+            stroke = Self.resized(stroke, toolWidth: penToolWidth)
             changed = true
         }
         if changed {
