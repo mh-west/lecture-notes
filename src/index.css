@@ -290,3 +290,6 @@ button.course-title b { font-size: 19px; }
 .orient-shape.landscape { width: 56px; height: 40px; margin: 8px 0; }
 .whisper-box { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin: 8px 0; }
 .whisper-box button { align-self: flex-start; }
+.rec-banner { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid #dc2626; border-radius: 10px; background: var(--panel); flex-wrap: wrap; }
+.rec-banner .dot { width: 10px; height: 10px; border-radius: 50%; background: #dc2626; flex-shrink: 0; }
+.rec-banner .rec-doc { flex: 1; min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }

@@ -27,7 +27,7 @@ function strokePath(s: Drawable, scale: number, last: boolean): Path2D {
   const path = outlinePath(
     getStroke(pts, {
       size: s.size * scale * (hl ? 4 : 1),
-      thinning: hl ? 0 : 0.55,
+      thinning: 0, // the same width throughout, like a ballpoint
       smoothing: 0.5,
       streamline: 0.4,
       simulatePressure: !s.points.some((p) => p.p !== 0.5),

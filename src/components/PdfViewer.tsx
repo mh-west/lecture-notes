@@ -117,7 +117,9 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
         useStore.getState().setPageOrder(saved?.length ? saved : s.map((_, i) => i + 1));
         useStore.setState({ blankOrient: rec.blankOrient ?? {} });
         setSizes(s);
+        const previous = currentPdf.doc;
         currentPdf.doc = doc;
+        if (previous && previous !== doc) previous.loadingTask.destroy(); // one kept open for a recording
         currentPdf.ocr = rec.ocrPages; // scanned PDF: page text read earlier with OCR
         setPdf(doc);
         // Where the view landed, for diagnosing blank screens from the device log.
@@ -142,6 +144,10 @@ export default function PdfViewer({ docId, onMissing }: { docId: string; onMissi
     })();
     return () => {
       cancelled = true;
+      // Translation and the summary of a running recording read the slides even from the library.
+      const st = useStore.getState();
+      if (doc && currentPdf.doc === doc && (st.activeRec || st.finishing)) return;
+      if (currentPdf.doc === doc) currentPdf.doc = null;
       doc?.loadingTask.destroy();
     };
   }, [docId]);

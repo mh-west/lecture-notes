@@ -75,6 +75,7 @@ async function ocrPdf(doc: Doc, pdf: PDFDoc): Promise<string[]> {
 
 export async function ensureDocTerms(doc: Doc, pdf: PDFDoc): Promise<string[]> {
   if (doc.ocrPages?.length && currentPdf.doc === pdf) currentPdf.ocr = doc.ocrPages;
+  if (doc.blank) return [];
   if (doc.terms && doc.termsV === TERMS_V) return doc.terms;
   let text = await pdfAllText(pdf);
   if (isNative && text.replace(/\s/g, '').length < 30 * Math.min(pdf.numPages, 500)) {

@@ -14,6 +14,8 @@ export interface Doc {
   name: string;
   pdf: Blob;
   pages?: number[]; // display order: PDF page numbers, negative ids for added blank pages
+  blank?: boolean; // made in the app with empty pages: nothing to read or recognise
+  openedAt?: number; // last opened: its folder goes to the top of the library
   blankOrient?: Record<number, Orientation>; // per blank page; missing = the first PDF page's shape
   createdAt: number;
   updatedAt: number;

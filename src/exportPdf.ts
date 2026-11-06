@@ -1,7 +1,7 @@
 import { Directory, Filesystem } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { PDFDocument } from 'pdf-lib';
-import { blankSize, db, type Stroke } from './db';
+import { blankSize, db, importPdf, type Orientation, type Stroke } from './db';
 import { drawStroke } from './ink';
 import { isNative, LectureAudio } from './native';
 import { loadPdf } from './pdf';
@@ -110,6 +110,16 @@ async function withInk(docId: string, onProgress?: (done: number, total: number)
   }
   onProgress?.(order.length, order.length);
   return out.save();
+}
+
+/** A new PDF of empty A4 pages in the library (a notebook to write in). Returns its id. */
+export async function createBlankPdf(name: string, pages: number, orient: Orientation, courseId?: string): Promise<string> {
+  const out = await PDFDocument.create();
+  const size: [number, number] = orient === 'portrait' ? [595.28, 841.89] : [841.89, 595.28];
+  for (let i = 0; i < pages; i++) out.addPage(size);
+  const id = await importPdf(new Blob([(await out.save()) as BlobPart], { type: 'application/pdf' }), name, courseId);
+  await db.docs.update(id, { blank: true });
+  return id;
 }
 
 function toBase64(bytes: Uint8Array) {

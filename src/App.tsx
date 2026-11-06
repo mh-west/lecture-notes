@@ -18,6 +18,28 @@ export default function App() {
   const openDoc = useStore((s) => s.openDoc);
   const doc = useLiveQuery(() => (docId ? db.docs.get(docId) : undefined), [docId]);
   const sideOpen = useStore((s) => s.sideOpen);
+  const [waiting, setWaiting] = useState<string | null>(null); // PDF to open once a recording has wrapped up
+
+  // A recording keeps going in the library and in its own PDF; only opening another PDF ends it, if asked.
+  const open = async (id: string) => {
+    const st = useStore.getState();
+    if (st.activeRec && st.activeRec.docId !== id) {
+      if (!confirm('지금 녹음 중이에요. 녹음을 멈추고 이 PDF를 열까요?')) return;
+      await st.stopRecording();
+    }
+    const after = useStore.getState();
+    if (after.finishing && after.docId !== id) {
+      // Its last captions, translation and summary need that PDF's data in the app.
+      setWaiting(id);
+      await after.waitFinished();
+      setWaiting((w) => {
+        if (w === id) setDocId(id);
+        return null;
+      });
+      return;
+    }
+    setDocId(id);
+  };
 
   // PDFs shared to the app ("강의노트에 복사" in the share sheet) arrive as file URLs in Documents/Inbox.
   useEffect(() => {
@@ -60,7 +82,29 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  if (!docId) return <Library onOpen={setDocId} />;
+  if (!docId) {
+    return (
+      <>
+        <Library onOpen={open} />
+        {waiting && (
+          <div className="modal-backdrop">
+            <div className="modal share-modal">
+              <h2>녹음 마무리 중…</h2>
+              <div className="muted">녹음은 저장됐어요. 남은 자막·번역·요약을 끝내고 PDF를 열게요.</div>
+              <button
+                onClick={() => {
+                  setDocId(waiting);
+                  setWaiting(null);
+                }}
+              >
+                기다리지 않고 열기 (남은 번역·요약은 나중에 직접)
+              </button>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
 
   return (
     <div className="app">

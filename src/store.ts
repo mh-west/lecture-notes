@@ -61,6 +61,8 @@ interface State {
 
   // recording
   activeRec: Recording | null;
+  finishing: string | null; // recording just stopped: last captions, translation and summary still running
+  waitFinished: () => Promise<void>;
   recStartPerf: number;
   partial: string; // caption text not yet finalised
   captionError: string | null;
@@ -156,6 +158,7 @@ let seq = 0;
 let refineChain: Promise<void> = Promise.resolve();
 const DAY = 24 * 60 * 60 * 1000;
 const REVIEW_GAPS = [1, 3, 7, 14, 30]; // days until the next review, by box
+let finished: Promise<void> = Promise.resolve(); // the last recording's wrap-up
 let stopping = false; // a stop is in progress; repeated taps are ignored
 let toolBeforeEraser: Tool = 'pen';
 const inFlight = new Set<string>(); // segment ids being refined
@@ -253,18 +256,20 @@ export const useStore = create<State>((set, get) => {
     lines.filter((l) => !/^\s*(\[[^\]]*\]|\([^)]*\)|[♪*\s.]*)\s*$/.test(l.text)).flatMap(sentences);
 
   /** Whisper's lines for ~30 s of the lecture take the place of the live lines there. */
-  const onWhisperChunk = (rec: Recording) => (e: WhisperChunk) => {
+  const onWhisperChunk = (rec: Recording) => async (e: WhisperChunk) => {
     const mid = (s: Segment) => (s.start + s.end) / 2;
-    const gone = get().segments.filter((s) => s.recId === rec.id && s.src !== 'whisper' && mid(s) >= e.start - 0.5 && mid(s) < e.end);
+    const inRange = (s: Segment) => s.recId === rec.id && s.src !== 'whisper' && mid(s) >= e.start - 0.5 && mid(s) < e.end;
+    // From the state and the database: another PDF may be open by the time the last chunk lands.
+    const gone = [...get().segments.filter(inRange), ...(await db.segments.where('docId').equals(rec.docId).filter(inRange).toArray())];
     const added: Segment[] = whisperLines(e.lines).map((l) => ({ id: uid(), docId: rec.docId, recId: rec.id, start: l.start, end: l.end, text: l.text, src: 'whisper' }));
     if (!gone.length && !added.length) return;
     const goneIds = new Set(gone.map((s) => s.id));
     set((st) => ({
-      segments: [...st.segments.filter((s) => !goneIds.has(s.id)), ...added].sort((a, b) => (a.recId === b.recId ? a.start - b.start : 0)),
+      segments: [...st.segments.filter((s) => !goneIds.has(s.id)), ...(st.docId === rec.docId ? added : [])].sort((a, b) => (a.recId === b.recId ? a.start - b.start : 0)),
     }));
     db.segments.bulkDelete([...goneIds]);
     db.segments.bulkPut(added);
-    if (rec.lang !== 'ko-KR') {
+    if (rec.lang !== 'ko-KR' && get().docId === rec.docId) {
       for (const s of added) get().translateSegment(s.id); // quick on-device translation until the refined one lands
       maybeRefine(rec.id, true);
     }
@@ -358,6 +363,29 @@ export const useStore = create<State>((set, get) => {
     }));
   };
 
+  // After the recording stops: Whisper's last ~30 s (at most two minutes' wait), the last translations,
+  // then the lecture summary.
+  const wrapUpRecording = async (rec: Recording) => {
+    if (whisperRunning.has(rec.id)) {
+      set({ captionError: '정확한 자막 마무리 중… (마지막 30초)' });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, 120_000);
+        whisperDone.set(rec.id, () => {
+          clearTimeout(t);
+          resolve();
+        });
+      });
+      whisperDone.delete(rec.id);
+      whisperRunning.delete(rec.id);
+      if (get().captionError?.startsWith('정확한 자막 마무리')) set({ captionError: null });
+    }
+    if (loadSettings().refine && !get().refineError) {
+      await refineChain;
+      if (rec.lang !== 'ko-KR') await get().refineAll(rec.id);
+      await get().summarizeRec(rec.id);
+    }
+  };
+
   const onCaption = (rec: Recording) => (e: TranscriptEvent) => {
     if (get().activeRec?.id !== rec.id) return;
     if (!e.final) {
@@ -418,7 +446,11 @@ export const useStore = create<State>((set, get) => {
     ask: null,
 
     openDoc: async (id) => {
-      if (get().activeRec) await get().stopRecording();
+      // Leaving a PDF doesn't end its recording: going to the library or back into it keeps all of this
+      // as it is, since captions keep arriving (the app asks before anything else stops a recording).
+      const { activeRec, finishing, docId } = get();
+      if ((activeRec || finishing) && (!id || id === docId)) return;
+      if (activeRec) await get().stopRecording();
       audio.pause();
       const reset = { selection: null, undoStack: [], redoStack: [], replayT: null, playingRecId: null, ask: null, partial: '', viewPage: 1, pageOrder: [], blankOrient: {} };
       if (!id) {
@@ -438,6 +470,7 @@ export const useStore = create<State>((set, get) => {
       const saved = lsGet(`lang:${id}`);
       const lang: LectureLang = saved === 'ko-KR' || saved === 'en-US' ? saved : (course?.lang ?? 'en-US');
       set({ docId: id, strokes, recordings, segments, questions, summaries, revisions, lang, course, ...reset });
+      db.docs.update(id, { openedAt: Date.now() });
     },
 
     // Highlighter with a dark ink colour looks like grey mud; default it to yellow.
@@ -656,28 +689,17 @@ export const useStore = create<State>((set, get) => {
       } finally {
         stopping = false;
       }
-      // The last ~30 s are still with Whisper: wait for them (at most two minutes) before the summary.
-      if (whisperRunning.has(activeRec.id)) {
-        set({ captionError: '정확한 자막 마무리 중… (마지막 30초)' });
-        await new Promise<void>((resolve) => {
-          const t = setTimeout(resolve, 120_000);
-          whisperDone.set(activeRec.id, () => {
-            clearTimeout(t);
-            resolve();
-          });
+      // The recording is safe: the rest carries on in the background (see waitFinished).
+      set({ finishing: activeRec.id });
+      finished = wrapUpRecording(activeRec)
+        .catch((e) => set({ captionError: errMsg(e) }))
+        .finally(() => {
+          if (get().finishing === activeRec.id) set({ finishing: null });
         });
-        whisperDone.delete(activeRec.id);
-        whisperRunning.delete(activeRec.id);
-        if (get().captionError?.startsWith('정확한 자막 마무리')) set({ captionError: null });
-      }
-      if (loadSettings().refine && !get().refineError) {
-        // Finish the last lines (English lectures only), then write the lecture summary.
-        const korean = activeRec.lang === 'ko-KR';
-        refineChain
-          .then(() => (korean ? undefined : get().refineAll(activeRec.id)))
-          .then(() => get().summarizeRec(activeRec.id));
-      }
     },
+
+    finishing: null,
+    waitFinished: () => finished,
 
     setViewPage: (page) => {
       if (page === get().viewPage) return;

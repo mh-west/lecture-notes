@@ -582,6 +582,16 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
     private var panSawPinch = false // the current one-finger pan turned into a pinch at some point
     private var restWork: DispatchWorkItem?
     private var highlighter = false
+    private var inkColor = UIColor.black
+    private var inkWidth: CGFloat = 2
+    // Hold to straighten: the pencil staying put for a while at the end of a stroke makes it a straight line.
+    private static let holdSeconds = 2.0
+    private static let holdSlop: CGFloat = 5 // points of hand tremor that still count as staying put
+    private var strokeStart: CGPoint?
+    private var holdAnchor = CGPoint.zero
+    private var holdWork: DispatchWorkItem?
+    private var straighten = false
+    private let holdPreview = CAShapeLayer()
     private let pan = UIPanGestureRecognizer()
     private let pinch = UIPinchGestureRecognizer()
     private let tap = UITapGestureRecognizer()
@@ -612,10 +622,19 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
             g.delegate = self
             container.addGestureRecognizer(g)
         }
-        let pencil = PencilState { [weak self] down in
+        holdPreview.fillColor = nil
+        holdPreview.lineCap = .round
+        container.layer.addSublayer(holdPreview)
+        let pencil = PencilState(moved: { [weak self] p in self?.pencilMoved(to: p) }) { [weak self] down in
             guard let self else { return }
             self.pencilDown = down
             self.restWork?.cancel()
+            self.holdWork?.cancel()
+            self.holdPreview.path = nil
+            if down {
+                self.strokeStart = nil
+                self.straighten = false
+            }
             guard !down else { return }
             // Tidy up only once the pencil has rested, so a stroke started right after is never disturbed.
             let work = DispatchWorkItem { [weak self] in self?.applyRemovals() }
@@ -630,7 +649,75 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
         self.highlighter = highlighter
         container.isHidden = !enabled
         if let host { container.frame = area.offsetBy(dx: host.frame.minX, dy: host.frame.minY) }
-        canvas.tool = PKInkingTool(highlighter ? .marker : .pen, color: color, width: highlighter ? width * 4 : width * 1.7)
+        inkColor = color
+        inkWidth = width
+        // Monoline: the same width whatever the pressure or speed, like a ballpoint.
+        canvas.tool = PKInkingTool(highlighter ? .marker : .monoline, color: color, width: highlighter ? width * 4 : width)
+    }
+
+    // MARK: hold to straighten
+
+    private func pencilMoved(to p: CGPoint) {
+        guard strokeStart != nil else {
+            strokeStart = p
+            holdAnchor = p
+            armHold()
+            return
+        }
+        guard hypot(p.x - holdAnchor.x, p.y - holdAnchor.y) > Self.holdSlop else { return }
+        holdAnchor = p
+        straighten = false
+        holdPreview.path = nil
+        armHold()
+    }
+
+    private func armHold() {
+        holdWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.holdReached() }
+        holdWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.holdSeconds, execute: work)
+    }
+
+    /// Long enough to be a line (not a dot being pressed): show what it will become when the pencil lifts.
+    private func holdReached() {
+        guard pencilDown, let start = strokeStart, hypot(holdAnchor.x - start.x, holdAnchor.y - start.y) >= 20 else { return }
+        straighten = true
+        let path = UIBezierPath()
+        path.move(to: start)
+        path.addLine(to: holdAnchor)
+        holdPreview.strokeColor = inkColor.withAlphaComponent(highlighter ? 0.4 : 1).cgColor
+        holdPreview.lineWidth = highlighter ? inkWidth * 4 : inkWidth
+        holdPreview.path = path.cgPath
+    }
+
+    /// A stored stroke's thickness comes from its points' sizes alone (thickness = 2 × size - 4).
+    private static func pointSize(thickness: CGFloat) -> CGFloat { thickness / 2 + 2 }
+
+    /// `stroke` as a straight line from its first to its last point.
+    private static func straightened(_ stroke: PKStroke) -> PKStroke? {
+        let pts = Array(stroke.path)
+        guard let a = pts.first, let b = pts.last else { return nil }
+        let middle = pts[pts.count / 2]
+        let n = max(2, Int(hypot(b.location.x - a.location.x, b.location.y - a.location.y) / 8))
+        let line = (0...n).map { i -> PKStrokePoint in
+            let t = CGFloat(i) / CGFloat(n)
+            return PKStrokePoint(location: CGPoint(x: a.location.x + (b.location.x - a.location.x) * t, y: a.location.y + (b.location.y - a.location.y) * t),
+                                 timeOffset: b.timeOffset * Double(t), size: middle.size, opacity: middle.opacity,
+                                 force: middle.force, azimuth: middle.azimuth, altitude: middle.altitude)
+        }
+        return PKStroke(ink: stroke.ink, path: PKStrokePath(controlPoints: line, creationDate: stroke.path.creationDate),
+                        transform: stroke.transform, mask: stroke.mask)
+    }
+
+    /// The monoline tool stops at width 4. Zoomed in, the width asked for is more: the finished stroke gets it.
+    private static func resized(_ stroke: PKStroke, thickness: CGFloat) -> PKStroke {
+        let s = pointSize(thickness: thickness)
+        let pts = stroke.path.map { p in
+            PKStrokePoint(location: p.location, timeOffset: p.timeOffset, size: CGSize(width: s, height: s), opacity: p.opacity,
+                          force: p.force, azimuth: p.azimuth, altitude: p.altitude)
+        }
+        return PKStroke(ink: stroke.ink, path: PKStrokePath(controlPoints: pts, creationDate: stroke.path.creationDate),
+                        transform: stroke.transform, mask: stroke.mask)
     }
 
     // MARK: strokes
@@ -638,7 +725,22 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         let strokes = canvasView.drawing.strokes
         defer { known = strokes.count }
-        guard strokes.count > known, let stroke = strokes.last else { return }
+        guard strokes.count > known, var stroke = strokes.last else { return }
+        print("[ink] tool width \(inkWidth) point size \(stroke.path.first?.size.width ?? 0)")
+        var changed = false
+        if straighten, let line = Self.straightened(stroke) {
+            stroke = line
+            changed = true
+        }
+        straighten = false
+        if !highlighter, inkWidth > 4 {
+            stroke = Self.resized(stroke, thickness: inkWidth)
+            changed = true
+        }
+        if changed {
+            known = strokes.count // this change of the drawing is not a new stroke
+            canvasView.drawing = PKDrawing(strokes: strokes.dropLast() + [stroke])
+        }
         // Report in web-view coordinates: the layer sits at `area` inside the web view.
         let dx = area.minX, dy = area.minY
         var points: [[String: Double]] = []
@@ -730,7 +832,9 @@ final class InkLayer: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegat
 /// Only reports whether the pencil is on the canvas; never takes the touches away from PencilKit.
 final class PencilState: UIGestureRecognizer {
     private let changed: (Bool) -> Void
-    init(changed: @escaping (Bool) -> Void) {
+    private let moved: (CGPoint) -> Void
+    init(moved: @escaping (CGPoint) -> Void, changed: @escaping (Bool) -> Void) {
+        self.moved = moved
         self.changed = changed
         super.init(target: nil, action: nil)
         allowedTouchTypes = [UITouch.TouchType.pencil.rawValue as NSNumber]
@@ -740,7 +844,13 @@ final class PencilState: UIGestureRecognizer {
     }
     override func canPrevent(_ g: UIGestureRecognizer) -> Bool { false }
     override func canBePrevented(by g: UIGestureRecognizer) -> Bool { false }
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) { changed(true) }
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        changed(true)
+        if let p = touches.first?.location(in: view) { moved(p) }
+    }
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let p = touches.first?.location(in: view) { moved(p) }
+    }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { changed(false); state = .failed }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { changed(false); state = .failed }
 }

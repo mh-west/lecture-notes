@@ -1,7 +1,10 @@
 import { useLiveQuery } from 'dexie-react-hooks';
-import { useRef, useState } from 'react';
-import { db, importPdf, uid, type Course, type Doc } from '../db';
+import { useEffect, useRef, useState } from 'react';
+import { db, importPdf, uid, type Course, type Doc, type Orientation } from '../db';
 import { exportCourses, importCourses } from '../courseFile';
+import { createBlankPdf } from '../exportPdf';
+import { fmtTime } from '../ink';
+import { useStore } from '../store';
 import { docTerms } from '../terms';
 import ExpiryBanner from './ExpiryBanner';
 import Features from './Features';
@@ -31,6 +34,73 @@ function firstVisit() {
   } catch {
     return false;
   }
+}
+
+/** A recording goes on while the library is open: where it is, the way back, and the way to stop it. */
+function RecordingBanner({ onOpen }: { onOpen: (id: string) => void }) {
+  const activeRec = useStore((s) => s.activeRec);
+  const finishing = useStore((s) => s.finishing);
+  const stop = useStore((s) => s.stopRecording);
+  const docId = activeRec?.docId;
+  const doc = useLiveQuery(() => (docId ? db.docs.get(docId) : undefined), [docId]);
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!activeRec) return;
+    const i = setInterval(() => tick((n) => n + 1), 500);
+    return () => clearInterval(i);
+  }, [activeRec]);
+  if (activeRec) {
+    return (
+      <div className="rec-banner">
+        <span className="dot" />
+        <b>{fmtTime(useStore.getState().recTime() ?? 0)} 녹음 중</b>
+        <span className="rec-doc">{doc?.name}</span>
+        <button onClick={() => onOpen(activeRec.docId)}>돌아가기</button>
+        <button className="danger" onClick={() => stop()}>정지</button>
+      </div>
+    );
+  }
+  return finishing ? <div className="hint">녹음을 저장했어요. 남은 자막·번역·요약을 마무리하는 중이에요…</div> : null;
+}
+
+/** A new PDF with only empty pages: a notebook to write in. */
+function BlankPdfDialog({ courseId, onClose, onCreated }: { courseId?: string; onClose: () => void; onCreated: (id: string) => void }) {
+  const [name, setName] = useState('빈 노트');
+  const [pages, setPages] = useState('10');
+  const [orient, setOrient] = useState<Orientation>('portrait');
+  const count = Math.floor(Number(pages));
+  const valid = name.trim() && count >= 1 && count <= 500;
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal page-modal" onClick={(e) => e.stopPropagation()}>
+        <header>
+          <h2>빈 PDF 만들기</h2>
+          <button onClick={onClose} aria-label="닫기">✕</button>
+        </header>
+        <label className="field">
+          이름
+          <input value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label className="field">
+          페이지 수 <span className="muted">— 나중에 빈 페이지를 더 넣을 수 있어요</span>
+          <input type="number" inputMode="numeric" min={1} max={500} value={pages} onChange={(e) => setPages(e.target.value)} />
+        </label>
+        <div className="orient-choices">
+          <button className={orient === 'portrait' ? 'active' : ''} onClick={() => setOrient('portrait')}>
+            <span className="orient-shape portrait" />
+            세로
+          </button>
+          <button className={orient === 'landscape' ? 'active' : ''} onClick={() => setOrient('landscape')}>
+            <span className="orient-shape landscape" />
+            가로
+          </button>
+        </div>
+        <button className="primary big" disabled={!valid} onClick={async () => onCreated(await createBlankPdf(name.trim(), count, orient, courseId))}>
+          만들기
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
@@ -67,6 +137,8 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
   const [showFeatures, setShowFeatures] = useState(firstVisit);
   const [target, setTarget] = useState<string | undefined>(); // course the next picked PDFs go into
   const [editing, setEditing] = useState<Course | 'new' | null>(null);
+  const [blankFor, setBlankFor] = useState<{ courseId?: string } | null>(null); // folder a new blank PDF goes into
+  const recordingDoc = useStore((s) => s.activeRec?.docId);
 
   const pick = (courseId?: string) => {
     setTarget(courseId);
@@ -83,6 +155,7 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
   };
 
   const remove = async (id: string, name: string) => {
+    if (id === recordingDoc) return void setNotice('⚠️ 녹음 중인 PDF는 삭제할 수 없어요. 녹음을 먼저 멈춰 주세요');
     if (!confirm(`"${name}" 문서와 필기·녹음·자막·질문을 모두 삭제할까요?`)) return;
     const recs = await db.recordings.where('docId').equals(id).primaryKeys();
     await db.transaction('rw', [db.docs, db.strokes, db.recordings, db.chunks, db.segments, db.questions, db.summaries], async () => {
@@ -103,6 +176,9 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
   ];
   const unfiled = (docs ?? []).filter((d) => !d.courseId || !courses?.some((c) => c.id === d.courseId));
   if (unfiled.length || !courses?.length) sections.push({ course: null, docs: unfiled });
+  // The folder of the PDF opened last comes first; folders never opened keep their order below.
+  const opened = (s: { docs: Doc[] }) => Math.max(0, ...s.docs.map((d) => d.openedAt ?? 0));
+  sections.sort((a, b) => opened(b) - opened(a));
 
   return (
     <div className="library">
@@ -111,6 +187,7 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
         <div className="row-wrap">
           <button onClick={() => setShowFeatures(true)}>이 앱으로 할 수 있는 것</button>
           <button onClick={() => setEditing('new')}>+ 과목 폴더</button>
+          <button onClick={() => setBlankFor({})}>+ 빈 PDF</button>
           <button className="primary" onClick={() => pick(undefined)}>+ PDF 추가</button>
         </div>
         <input ref={input} type="file" accept="application/pdf" multiple hidden onChange={(e) => add(e.target.files)} />
@@ -121,6 +198,7 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
         <button className="link small" onClick={() => courseInput.current?.click()}>파일에서 가져오기</button>
         <input ref={courseInput} type="file" accept="application/json,.json" hidden onChange={(e) => importFolders(e.target.files)} />
       </div>
+      <RecordingBanner onOpen={onOpen} />
       {notice && <div className="hint" onClick={() => setNotice(null)}>{notice}</div>}
       <IdeasBox />
       <ExpiryBanner />
@@ -148,6 +226,7 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
             </button>
             <div className="row-wrap">
               {course && <button onClick={() => setEditing(course)}>⚙ 과목 설정</button>}
+              <button onClick={() => setBlankFor({ courseId: course?.id })}>+ 빈 PDF</button>
               <button onClick={() => pick(course?.id)}>+ PDF</button>
             </div>
           </div>
@@ -156,7 +235,7 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
             {list.map((d) => (
               <li key={d.id}>
                 <button className="doc" onClick={() => onOpen(d.id)}>
-                  <span className="doc-icon">📄</span>
+                  <span className="doc-icon">{d.id === recordingDoc ? '🔴' : '📄'}</span>
                   <span className="doc-name">{d.name}</span>
                   <span className="muted">{new Date(d.updatedAt).toLocaleDateString('ko-KR')}</span>
                 </button>
@@ -176,6 +255,16 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
         </section>
       ))}
 
+      {blankFor && (
+        <BlankPdfDialog
+          courseId={blankFor.courseId}
+          onClose={() => setBlankFor(null)}
+          onCreated={(id) => {
+            setBlankFor(null);
+            onOpen(id);
+          }}
+        />
+      )}
       {showFeatures && <Features onClose={() => setShowFeatures(false)} />}
       {editing && <CourseDialog course={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
     </div>
