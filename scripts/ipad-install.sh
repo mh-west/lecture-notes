@@ -72,7 +72,7 @@ if [[ ${1:-} != --force ]]; then
 fi
 
 # Signing needs the Apple account in Xcode; it sometimes gets logged out. Check before touching profiles.
-if ! defaults read com.apple.dt.Xcode DVTDeveloperAccountManagerAppleIDLists 2>/dev/null | grep -q '@'; then
+if ! defaults read com.apple.dt.Xcode DVTDeveloperAccountManagerAppleIDLists 2>/dev/null | grep -q 'identifier'; then
   log "Xcode has no Apple account: sign in under Xcode > Settings > Accounts"
   echo "$now" >"$FAILED"
   notify "Xcode에 Apple 계정이 로그아웃돼 있어요. Xcode > Settings > Accounts에서 로그인해 주세요."
